@@ -1,0 +1,13 @@
+octopus_server_url = "https://your-octopus-instance.octopus.app"
+octopus_api_key    = "API-XXXXXXXXXXXXXXXXXXXXXXXX"
+
+# Optional overrides — see variables.tf for defaults. This configuration
+# creates its own dedicated "Manufacturing" space rather than using
+# Spaces-1, so there's no space_id to set here.
+# space_name            = "Manufacturing"
+# space_description     = "Manufacturing environments, projects, and tenants."
+# space_managers_teams  = ["teams-administrators"]
+
+# Optional: Override default tenant/environment configuration
+# demo_environments = [...]
+# demo_tenants = [...]
