@@ -1,0 +1,189 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Compiled binaries (but not directories)
+/server
+./server
+server.exe
+
+# Test binaries
+*.test
+*.out
+
+# Go build artifacts
+/cmd/server/server
+/bin/
+/build/
+
+# Go workspace file
+go.work
+
+# IDEs and Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+
+# JetBrains IDEs
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# Vim
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Docker
+.dockerignore
+
+# Kubernetes
+*.kubeconfig
+kubeconfig
+.kube/
+
+# Helm
+charts/*.tgz
+.helmignore
+
+# Terraform (if used)
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform/
+.terraform.lock.hcl
+
+# Environment files
+.env
+.env.local
+.env.*.local
+*.env
+
+# Secrets and credentials
+secrets/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Backup files from rename script
+backup-*/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+
+# Build output
+dist/
+out/
+output/
+
+# Node modules (if using any JS tooling)
+node_modules/
+package-lock.json
+
+# Python (if using any Python tooling)
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+ENV/
+
+# Coverage reports
+coverage/
+*.coverprofile
+
+# Debugging
+debug
+debug.test
+
+# Air (Go live reload tool)
+tmp/
+.air.toml
+
+# Go workspace file
+go.work
+
+# Local testing
+local-test/
+scratch/
+
+# CI/CD artifacts
+.github/workflows/*.log
+
+# Octopus Deploy
+.octopus/
+
+# JFrog CLI
+.jfrog/
+
+# Certificate files
+*.crt
+*.key
+*.pem
+*.der
+
+# Database files (if any)
+*.db
+*.sqlite
+*.sqlite3
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# Generated documentation
+/docs/_build/
+site/

@@ -1,0 +1,18 @@
+octopus_server_url = "http://localhost:8080"
+octopus_api_key    = "API-XXXXXXXXXXXXXXXXXXXXXXXX"
+octopus_space_id   = "Spaces-1"
+
+gitea_url      = "http://localhost:3000"
+gitea_username = "admin"
+gitea_password = "your-gitea-password"
+
+argocd_server_addr = "localhost:19443"
+argocd_username    = "octopus"
+argocd_password    = "your-argocd-password"
+argocd_insecure    = true
+argocd_plain_text  = true
+
+# Optional override — see variables.tf for the default
+# (~/kind-cluster/kind-config.yaml). Only needed when Terraform runs on a
+# different host than the KinD cluster (e.g. local Vagrant dev).
+# kubeconfig_path = "/path/to/kubeconfig"

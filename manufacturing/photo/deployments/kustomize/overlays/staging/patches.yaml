@@ -1,0 +1,13 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: photo
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+      - name: photo
+        env:
+        - name: BG_COLOR
+          value: "#f39c12"

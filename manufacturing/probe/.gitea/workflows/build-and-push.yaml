@@ -1,0 +1,190 @@
+name: Build and Push to Gitea
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: true
+        type: string
+
+env:
+  SERVICE_NAME: probe
+
+jobs:
+  build-and-push:
+    name: Build and Push Service
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate semver tag
+        id: semver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.version }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+
+          echo "Original tag: $TAG"
+          VERSION="${TAG#v}"
+          echo "Version without prefix: $VERSION"
+
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
+            echo "Error: Tag '$TAG' is not a valid semver format"
+            exit 1
+          fi
+
+          echo "✓ Valid semver tag: $VERSION"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          # The buildx builder is its own container (buildx_buildkit_...),
+          # separate from the job container — confirmed directly that it
+          # doesn't join "octopusdeploy_default" by default, so the actual
+          # image push (which BuildKit performs itself, not docker CLI)
+          # failed to resolve "gitea" at all: "dial tcp: lookup gitea on
+          # 192.168.0.153:53: no such host" (the Windows host's own LAN
+          # DNS — nothing to do with this VM or Docker network at all).
+          driver-opts: network=octopusdeploy_default
+          # BuildKit doesn't read the host dockerd's /etc/docker/daemon.json
+          # "insecure-registries" setting at all — it's a completely separate
+          # daemon with its own registry config. Without this, the push
+          # failed with "http: server gave HTTP response to HTTPS client"
+          # even though the host daemon itself was already configured
+          # correctly for gitea:3000.
+          config-inline: |
+            [registry."gitea:3000"]
+              http = true
+              insecure = true
+
+      - name: Work around job container DNS resolution for gitea
+        run: |
+          # The runner-images:ubuntu-latest job container runs its own
+          # systemd-resolved stub (127.0.0.53), which doesn't forward to
+          # Docker's real embedded DNS (127.0.0.11) for custom-network
+          # container names — confirmed directly: docker/login-action
+          # failed with "lookup gitea on 127.0.0.53:53: server misbehaving"
+          # even though gitea:3000 is reachable and resolves fine via
+          # 127.0.0.11. Pinning it in /etc/hosts sidesteps the broken
+          # local resolver entirely.
+          GITEA_IP=$(getent ahostsv4 gitea 2>/dev/null | awk '{print $1; exit}')
+          if [ -z "${GITEA_IP}" ]; then
+            GITEA_IP=$(nslookup gitea 127.0.0.11 2>/dev/null | awk '/^Address: / {print $2}' | tail -1)
+          fi
+          if [ -z "${GITEA_IP}" ]; then
+            echo "::error::Could not resolve gitea via 127.0.0.11 either — failing fast instead of a confusing later error"
+            exit 1
+          fi
+          echo "${GITEA_IP} gitea" | sudo tee -a /etc/hosts
+          echo "Pinned gitea -> ${GITEA_IP} in /etc/hosts"
+
+      - name: Login to Gitea Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.CONTAINER_REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Extract metadata
+        id: meta
+        run: |
+          VERSION="${{ steps.semver.outputs.version }}"
+          BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+
+          REGISTRY="${{ vars.CONTAINER_REGISTRY }}"
+          IMAGE_NAME="${{ env.SERVICE_NAME }}"
+          FULL_IMAGE="${REGISTRY}/admin/${IMAGE_NAME}"
+
+          TAGS="${FULL_IMAGE}:${VERSION}"
+          TAGS="${TAGS},${FULL_IMAGE}:latest"
+
+          # Deliberately only the exact version + latest — no floating
+          # MAJOR/MAJOR.MINOR tags (e.g. "1", "1.0"). Those extra tags sat
+          # alongside "1.0.0" in the registry and were mistaken for a wrong
+          # tag having been pushed; every values.yaml pins the exact
+          # version anyway, so the floating tags added confusion with no
+          # actual use in this GitOps flow.
+
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "build_date=${BUILD_DATE}" >> $GITHUB_OUTPUT
+          echo "full_image=${FULL_IMAGE}" >> $GITHUB_OUTPUT
+          echo "image_uri=${FULL_IMAGE}:${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            IMAGE=${{ steps.meta.outputs.image_uri }}
+            TEXT_COLOR=${{ vars.TEXT_COLOR || '#FFFFFF' }}
+            BG_COLOR=${{ vars.BG_COLOR || '#2C3E50' }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.build_date }}
+          platforms: linux/amd64
+
+      - name: Install Octopus CLI
+        uses: OctopusDeploy/install-octopus-cli-action@v3
+        with:
+          version: latest
+
+      - name: Push Build Information to Octopus Deploy
+        env:
+          OCTOPUS_URL: ${{ secrets.OCTOPUS_SERVER_URL }}
+          OCTOPUS_API_KEY: ${{ secrets.OCTOPUS_API_KEY }}
+          OCTOPUS_SPACE: ${{ vars.OCTOPUS_SPACE }}
+        run: |
+          octopus build-information push \
+            --package-id="${{ env.SERVICE_NAME }}" \
+            --version="${{ steps.meta.outputs.version }}" \
+            --overwrite-mode=OverwriteExisting
+
+      - name: Create Release in Octopus Deploy
+        uses: OctopusDeploy/create-release-action@v3
+        with:
+          api_key: ${{ secrets.OCTOPUS_API_KEY }}
+          server: ${{ secrets.OCTOPUS_SERVER_URL }}
+          space: ${{ vars.OCTOPUS_SPACE }}
+          project: ${{ vars.OCTOPUS_PROJECT }}
+          package_version: ${{ steps.meta.outputs.version }}
+          release_number: ${{ steps.meta.outputs.version }}
+
+      - name: Output Summary
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Service:** ${{ env.SERVICE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.meta.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image URI:** ${{ steps.meta.outputs.image_uri }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Docker Tags Pushed" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Octopus Deploy" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Build information pushed" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Release ${{ steps.meta.outputs.version }} created" >> $GITHUB_STEP_SUMMARY

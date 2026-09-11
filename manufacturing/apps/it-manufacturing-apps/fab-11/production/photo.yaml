@@ -1,0 +1,26 @@
+﻿apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: photo-production-fab-11
+  annotations:
+    argo.octopus.com/project: "photo"
+    argo.octopus.com/environment: "lead-site-production"
+    argo.octopus.com/tenant: "fab-11"
+    argo.octopus.com/image-replace-paths: "gitea:3000/admin/photo:{{ .Values.photo.image.tag }}"
+spec:
+  project: default
+  source:
+    repoURL: http://gitea:3000/admin/manufacturing-configs.git
+    targetRevision: HEAD
+    path: north-america/fab-11/production/photo
+  destination:
+    namespace: photo-production-fab-11
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      allowEmpty: true
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - Validate=false
+      - CreateNamespace=true

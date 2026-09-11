@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: photo
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+      - name: photo
+        env:
+        - name: BG_COLOR
+          value: "#3498db"
+        resources:
+          limits:
+            cpu: 100m
+            memory: 64Mi
+          requests:
+            cpu: 50m
+            memory: 32Mi
