@@ -63,29 +63,60 @@ data "external" "argocd_token" {
     set -euo pipefail
     export KUBECONFIG="${var.kubeconfig_path}"
 
+    # Confirm Argo CD's own resources actually exist before even trying to
+    # port-forward to them — a much clearer failure than "port never came
+    # up" when the real problem is that Argo CD hasn't been installed onto
+    # the cluster yet at all.
+    RESOURCES_READY=0
+    for i in $(seq 1 40); do
+      if kubectl get namespace argocd >/dev/null 2>&1 \
+          && [ "$(kubectl -n argocd get deployment argocd-server --no-headers 2>/dev/null | wc -l)" -gt 0 ]; then
+        RESOURCES_READY=1
+        break
+      fi
+      echo "  ...waiting for Argo CD resources to exist (attempt $i/40)" >&2
+      sleep 15
+    done
+    if [ "$RESOURCES_READY" -ne 1 ]; then
+      echo "Argo CD resources (namespace/argocd-server deployment) never appeared" >&2
+      exit 1
+    fi
+
     kubectl -n argocd port-forward svc/argocd-server 19443:443 >/tmp/argocd-tf-token-pf.log 2>&1 &
     PF_PID=$!
     trap 'kill "$PF_PID" >/dev/null 2>&1 || true' EXIT
 
     READY=0
-    for i in $(seq 1 15); do
+    for i in $(seq 1 20); do
       if (exec 3<>/dev/tcp/127.0.0.1/19443) 2>/dev/null; then
         exec 3>&- 3<&- 2>/dev/null
         READY=1
         break
       fi
-      sleep 1
+      echo "  ...waiting for the argocd-server port-forward (attempt $i/20)" >&2
+      sleep 15
     done
     if [ "$READY" -ne 1 ]; then
       echo "Argo CD port-forward never came up: $(cat /tmp/argocd-tf-token-pf.log)" >&2
       exit 1
     fi
 
-    argocd login localhost:19443 --username "${var.argocd_username}" --password "${var.argocd_password}" --insecure --plaintext >/dev/null
-
-    TOKEN=$(argocd account generate-token --account "${var.argocd_username}" --insecure --plaintext)
+    # A retry here too: the port answering doesn't guarantee argocd-server
+    # has finished its own internal startup (redis connection, initial
+    # sync) the instant it starts accepting TCP connections.
+    TOKEN=""
+    for i in $(seq 1 10); do
+      if argocd login localhost:19443 --username "${var.argocd_username}" --password "${var.argocd_password}" --insecure --plaintext >/dev/null 2>/tmp/argocd-tf-login.log; then
+        TOKEN=$(argocd account generate-token --account "${var.argocd_username}" --insecure --plaintext 2>/tmp/argocd-tf-token-gen.log || true)
+        [ -n "$TOKEN" ] && break
+      fi
+      echo "  ...waiting for argocd login to succeed (attempt $i/10)" >&2
+      sleep 15
+    done
     if [ -z "$TOKEN" ]; then
       echo "Could not generate an Argo CD token for the ${var.argocd_username} account" >&2
+      echo "Last login attempt: $(cat /tmp/argocd-tf-login.log 2>/dev/null)" >&2
+      echo "Last token-gen attempt: $(cat /tmp/argocd-tf-token-gen.log 2>/dev/null)" >&2
       exit 1
     fi
 
