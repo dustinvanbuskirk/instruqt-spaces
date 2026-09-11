@@ -58,7 +58,7 @@ variable "argocd_plain_text" {
 }
 
 variable "kubeconfig_path" {
-  description = "Path to a kubeconfig for the KinD cluster, used by the local-exec kubectl calls in argocd.tf/bootstrap-cleanup.tf. Defaults to ~/kind-cluster/kind-config.yaml — the path the box's own install-kind.sh already writes, and where Terraform finds it for free when it runs directly on that box (an Instruqt track sandbox). Local Vagrant dev runs Terraform from the separate Windows host instead, so it overrides this to that host's own Vagrantfile-generated kubeconfig file (a socat-relayed path, not a copy of this same file)."
+  description = "Path to a kubeconfig for the KinD cluster, used by the local-exec kubectl calls in argocd.tf/bootstrap-cleanup.tf. Defaults to /root/.kube/config — kind's own default kubeconfig location (no --kubeconfig flag is ever passed to `kind create cluster` on this box, so it writes/merges there), which Terraform finds for free when it runs directly on that box (an Instruqt track sandbox). Note: ~/kind-cluster/kind-config.yaml is a *different* file — the cluster-creation config passed to `kind create cluster --config`, not a kubeconfig at all — and pointing kubectl at it fails immediately. Local Vagrant dev runs Terraform from the separate Windows host instead, so it overrides this to that host's own Vagrantfile-generated kubeconfig file (a socat-relayed path, not a copy of this same file)."
   type        = string
-  default     = "/root/kind-cluster/kind-config.yaml"
+  default     = "/root/.kube/config"
 }

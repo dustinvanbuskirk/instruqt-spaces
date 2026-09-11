@@ -89,11 +89,12 @@ terraform apply -var-file=../../../instruqt-octopus-local-images/terraform.tfvar
 
 The generated `terraform.tfvars` already sets `kubeconfig_path` to the
 Vagrantfile-generated `kubeconfig` file's absolute path — its own default
-(`~/kind-cluster/kind-config.yaml`) assumes Terraform is running on the
-same box as the KinD cluster (true on an Instruqt sandbox), which isn't
-the case for local dev (Terraform runs on the Windows host against the
-separate Vagrant VM). If you're running Terraform from WSL instead of
-git-bash/PowerShell, override it with the WSL-mounted equivalent path
+(`/root/.kube/config`, kind's own default kubeconfig location) assumes
+Terraform is running on the same box as the KinD cluster (true on an
+Instruqt sandbox), which isn't the case for local dev (Terraform runs on
+the Windows host against the separate Vagrant VM). If you're running
+Terraform from WSL instead of git-bash/PowerShell, override it with the
+WSL-mounted equivalent path
 (e.g. `-var kubeconfig_path=/mnt/c/Users/<you>/src/instruqt-octopus-local-images/kubeconfig`).
 
 A from-scratch apply creates on the order of 200+ resources (most of it is
