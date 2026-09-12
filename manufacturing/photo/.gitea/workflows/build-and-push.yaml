@@ -72,40 +72,25 @@ jobs:
               http = true
               insecure = true
 
-      - name: Work around job container DNS resolution for gitea
-        run: |
-          # gitea-runner's container.options now includes
-          # --add-host=gitea:host-gateway (see track_scripts/setup-track-image
-          # in instruqt-advanced-training-gitops), which should make this
-          # step redundant — but two consecutive builds still failed with
-          # the exact same error this step exists to work around, meaning
-          # that runner-level fix is not (yet, as far as confirmed) reliably
-          # taking effect. Restored as the proven fallback: this exact
-          # getent/nslookup/etc.-hosts sequence has been directly observed
-          # running inside the job container in prior logs, unlike the
-          # runner-level option whose actual effect on job container
-          # creation has never been directly confirmed. If gitea already
-          # resolves (the runner-level fix working), getent succeeds
-          # immediately and this is a harmless no-op.
-          #
-          # The runner-images:ubuntu-latest job container runs its own
-          # systemd-resolved stub (127.0.0.53), which doesn't forward to
-          # Docker's real embedded DNS (127.0.0.11) for custom-network
-          # container names — confirmed directly: docker/login-action
-          # failed with "lookup gitea on 127.0.0.53:53: server misbehaving"
-          # even though gitea:3000 is reachable and resolves fine via
-          # 127.0.0.11. Pinning it in /etc/hosts sidesteps the broken
-          # local resolver entirely.
-          GITEA_IP=$(getent ahostsv4 gitea 2>/dev/null | awk '{print $1; exit}')
-          if [ -z "${GITEA_IP}" ]; then
-            GITEA_IP=$(nslookup gitea 127.0.0.11 2>/dev/null | awk '/^Address: / {print $2}' | tail -1)
-          fi
-          if [ -z "${GITEA_IP}" ]; then
-            echo "::error::Could not resolve gitea via 127.0.0.11 either — failing fast instead of a confusing later error"
-            exit 1
-          fi
-          echo "${GITEA_IP} gitea" | sudo tee -a /etc/hosts
-          echo "Pinned gitea -> ${GITEA_IP} in /etc/hosts"
+      # A step used to live here re-resolving "gitea" and pinning it into
+      # this job container's own /etc/hosts, on the theory that the job
+      # container's own DNS was broken. It wasn't: "Checkout code" above
+      # (a plain git-over-http operation, run by a process *inside* this
+      # same job container) succeeded every single time this workflow
+      # failed at the login step below, proving this container's own
+      # resolution of "gitea" already worked fine via Docker's embedded
+      # DNS for the network. The real cause is that `docker login` doesn't
+      # verify credentials from this process at all — it delegates that
+      # HTTP call to the DAEMON via the Engine API's /auth endpoint
+      # (confirmed against moby/moby#41603 and docker/cli#2787), and since
+      # this container only has /var/run/docker.sock bind-mounted (a thin
+      # client to the real dockerd on the host, not a nested daemon), that
+      # call's DNS lookup happens in the HOST's network namespace, not
+      # this one — completely unaffected by anything this job container's
+      # own /etc/hosts says. Fixed instead in track_scripts/setup-track-image
+      # (instruqt-advanced-training-gitops), which adds "gitea" to the
+      # actual host's /etc/hosts, pointing at 127.0.0.1 — gitea's registry
+      # is already published on that host's own port 3000.
 
       - name: Login to Gitea Container Registry
         uses: docker/login-action@v3
