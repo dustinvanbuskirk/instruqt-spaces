@@ -30,13 +30,17 @@ resource "null_resource" "verify_service_builds" {
       for repo in manufacturing-photo manufacturing-probe; do
         echo "--- Waiting for $${repo}'s v1.0.0 build-and-push run to complete ---"
         DONE=0
+        PREV_STATE=""
         for i in $(seq 1 40); do
           RUN=$(curl -sf -u "$${GITEA_USERNAME}:$${GITEA_PASSWORD}" \
               "$${GITEA_URL}/api/v1/repos/$${GITEA_USERNAME}/$${repo}/actions/runs?limit=1" \
             | jq -c '.workflow_runs[0] // empty')
 
           if [ -z "$${RUN}" ]; then
-            echo "  ...no runs found yet for $${repo} (attempt $${i}/40)"
+            if [ "no-run" != "$${PREV_STATE}" ] || [ $((i % 6)) -eq 0 ]; then
+              echo "  ...no runs found yet for $${repo} (attempt $${i}/40)"
+            fi
+            PREV_STATE="no-run"
             sleep 10
             continue
           fi
@@ -44,7 +48,20 @@ resource "null_resource" "verify_service_builds" {
           RUN_ID=$(echo "$${RUN}" | jq -r '.id // empty')
           STATUS=$(echo "$${RUN}" | jq -r '.status // ""')
           CONCLUSION=$(echo "$${RUN}" | jq -r '.conclusion // ""')
-          echo "  $${repo} latest run (id=$${RUN_ID}): status=$${STATUS}, conclusion=$${CONCLUSION}"
+          # Logged only on a state change, plus a heartbeat every ~60s —
+          # not on every single 10s poll. A build that takes several
+          # minutes to reach a conclusion was otherwise printing dozens of
+          # near-identical lines, which pushed the actually useful failure
+          # detail further back in whatever buffer Instruqt's own log
+          # capture retains, past what it keeps: confirmed directly, a
+          # failure whose polling ran ~6 minutes showed nothing but the
+          # tail end of a cleanup hook in the captured log, never the
+          # step-detail dump below.
+          CUR_STATE="$${STATUS}:$${CONCLUSION}"
+          if [ "$${CUR_STATE}" != "$${PREV_STATE}" ] || [ $((i % 6)) -eq 0 ]; then
+            echo "  $${repo} latest run (id=$${RUN_ID}): status=$${STATUS}, conclusion=$${CONCLUSION} (attempt $${i}/40)"
+          fi
+          PREV_STATE="$${CUR_STATE}"
 
           if [ "$${STATUS}" = "completed" ]; then
             if [ "$${CONCLUSION}" = "success" ]; then
@@ -158,12 +175,16 @@ resource "null_resource" "verify_argocd_apps_healthy" {
       set -euo pipefail
 
       echo "--- Waiting for all Argo CD Applications to be Synced and Healthy ---"
+      PREV_NOT_READY=""
       for i in $(seq 1 40); do
         APPS_JSON=$(kubectl -n argocd get applications.argoproj.io -o json)
         TOTAL=$(echo "$${APPS_JSON}" | jq '.items | length')
 
         if [ "$${TOTAL}" -eq 0 ]; then
-          echo "  ...no Argo CD Applications found yet (attempt $${i}/40)"
+          if [ "no-apps" != "$${PREV_NOT_READY}" ] || [ $((i % 4)) -eq 0 ]; then
+            echo "  ...no Argo CD Applications found yet (attempt $${i}/40)"
+          fi
+          PREV_NOT_READY="no-apps"
           sleep 15
           continue
         fi
@@ -179,8 +200,17 @@ resource "null_resource" "verify_argocd_apps_healthy" {
           exit 0
         fi
 
-        echo "  ...waiting on $${TOTAL} Argo CD Application(s), not yet ready (attempt $${i}/40):"
-        echo "$${NOT_READY}" | sed 's/^/    /'
+        # Logged only when the set of not-ready apps changes, plus a
+        # heartbeat every ~60s — same reasoning as verify_service_builds
+        # above: a long wait here was printing every app's status on
+        # every single 15s poll, which is exactly the kind of volume that
+        # pushed useful detail out of Instruqt's own captured log buffer
+        # in a previous failure.
+        if [ "$${NOT_READY}" != "$${PREV_NOT_READY}" ] || [ $((i % 4)) -eq 0 ]; then
+          echo "  ...waiting on $${TOTAL} Argo CD Application(s), not yet ready (attempt $${i}/40):"
+          echo "$${NOT_READY}" | sed 's/^/    /'
+        fi
+        PREV_NOT_READY="$${NOT_READY}"
         sleep 15
       done
 
