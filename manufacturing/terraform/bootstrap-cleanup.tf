@@ -93,17 +93,36 @@ resource "null_resource" "clear_conflicting_bootstrap_environments" {
             REFERENCED=$(echo "$${LC_JSON}" | jq --arg id "$${ENV_ID}" \
               '[.Phases[] | select((.AutomaticDeploymentTargets + .OptionalDeploymentTargets) | index($id))] | length')
             if [ "$${REFERENCED}" != "0" ]; then
-              echo "$${LC_JSON}" \
+              PUT_HTTP=$(echo "$${LC_JSON}" \
                 | jq --arg id "$${ENV_ID}" '
                     .Phases = [.Phases[] | .AutomaticDeploymentTargets -= [$id] | .OptionalDeploymentTargets -= [$id]]
                     | del(.Links)' \
-                | curl -s -X PUT -H "X-Octopus-ApiKey: $${API_KEY}" -H "Content-Type: application/json" \
-                    -d @- "$${OCTOPUS_URL}/api/$${SPACE_ID}/lifecycles/$${LC}" >/dev/null
+                | curl -s -o /tmp/lifecycle-put-response.json -w "%%{http_code}" -X PUT \
+                    -H "X-Octopus-ApiKey: $${API_KEY}" -H "Content-Type: application/json" \
+                    -d @- "$${OCTOPUS_URL}/api/$${SPACE_ID}/lifecycles/$${LC}")
+              if [ "$${PUT_HTTP}" -lt 200 ] || [ "$${PUT_HTTP}" -ge 300 ]; then
+                echo "  ✗ Failed to clear reference from lifecycle $${LC} (HTTP $${PUT_HTTP}): $(cat /tmp/lifecycle-put-response.json)" >&2
+                exit 1
+              fi
               echo "  Cleared reference from lifecycle $${LC}"
             fi
           done
 
-          curl -s -X DELETE -H "X-Octopus-ApiKey: $${API_KEY}" "$${OCTOPUS_URL}/api/$${SPACE_ID}/environments/$${ENV_ID}" >/dev/null
+          # Never discard this: curl only fails (non-zero exit) on a
+          # network-level problem, not an HTTP error status — a 400/409
+          # here (the environment is still referenced by something this
+          # script doesn't yet know to clear, e.g. a tenant's project
+          # scoping from an earlier partial apply) would otherwise be
+          # swallowed by `>/dev/null`, print "Deleted" anyway, and leave
+          # the real conflict to resurface as a confusing "already
+          # exists" much later when the create step runs.
+          DELETE_HTTP=$(curl -s -o /tmp/env-delete-response.json -w "%%{http_code}" \
+            -X DELETE -H "X-Octopus-ApiKey: $${API_KEY}" \
+            "$${OCTOPUS_URL}/api/$${SPACE_ID}/environments/$${ENV_ID}")
+          if [ "$${DELETE_HTTP}" -lt 200 ] || [ "$${DELETE_HTTP}" -ge 300 ]; then
+            echo "  ✗ Failed to delete environment $${ENV_ID} (HTTP $${DELETE_HTTP}): $(cat /tmp/env-delete-response.json)" >&2
+            exit 1
+          fi
           echo "  Deleted environment $${ENV_ID}"
         done
       done
