@@ -41,9 +41,10 @@ resource "null_resource" "verify_service_builds" {
             continue
           fi
 
+          RUN_ID=$(echo "$${RUN}" | jq -r '.id // empty')
           STATUS=$(echo "$${RUN}" | jq -r '.status // ""')
           CONCLUSION=$(echo "$${RUN}" | jq -r '.conclusion // ""')
-          echo "  $${repo} latest run: status=$${STATUS}, conclusion=$${CONCLUSION}"
+          echo "  $${repo} latest run (id=$${RUN_ID}): status=$${STATUS}, conclusion=$${CONCLUSION}"
 
           if [ "$${STATUS}" = "completed" ]; then
             if [ "$${CONCLUSION}" = "success" ]; then
@@ -51,6 +52,37 @@ resource "null_resource" "verify_service_builds" {
               DONE=1
             else
               echo "✗ $${repo}: v1.0.0 build completed with conclusion '$${CONCLUSION}'" >&2
+              # Best-effort: dump each job's failing step and a tail of its
+              # log, so the track log shows *why* the build failed instead
+              # of just that it did. This API shape (Gitea's Actions
+              # endpoints mirror GitHub's) is not confirmed against a live
+              # instance, so every call here is guarded — a wrong field
+              # name or unexpected response must never mask the real
+              # failure already reported above, only add to it.
+              (
+                set +e
+                echo "--- $${repo} run $${RUN_ID}: job details ---" >&2
+                JOBS=$(curl -sf -u "$${GITEA_USERNAME}:$${GITEA_PASSWORD}" \
+                  "$${GITEA_URL}/api/v1/repos/$${GITEA_USERNAME}/$${repo}/actions/runs/$${RUN_ID}/jobs" 2>/dev/null)
+                if [ -z "$${JOBS}" ]; then
+                  echo "  (could not fetch job list for run $${RUN_ID})" >&2
+                else
+                  echo "$${JOBS}" | jq -c '.jobs[]? // empty' 2>/dev/null | while IFS= read -r JOB; do
+                    JOB_ID=$(echo "$${JOB}" | jq -r '.id // empty')
+                    JOB_NAME=$(echo "$${JOB}" | jq -r '.name // "unknown"')
+                    JOB_CONCLUSION=$(echo "$${JOB}" | jq -r '.conclusion // "unknown"')
+                    echo "  job '$${JOB_NAME}' (id=$${JOB_ID}): conclusion=$${JOB_CONCLUSION}" >&2
+                    echo "$${JOB}" | jq -r '.steps[]? | select(.conclusion != "success" and .conclusion != "") | "    ✗ step: \(.name) (\(.status)/\(.conclusion))"' >&2
+                    if [ -n "$${JOB_ID}" ]; then
+                      echo "  --- last 80 lines of job '$${JOB_NAME}' log ---" >&2
+                      curl -sf -u "$${GITEA_USERNAME}:$${GITEA_PASSWORD}" \
+                        "$${GITEA_URL}/api/v1/repos/$${GITEA_USERNAME}/$${repo}/actions/jobs/$${JOB_ID}/logs" 2>/dev/null \
+                        | tail -80 | sed 's/^/    /' >&2 \
+                        || echo "    (could not fetch log for job $${JOB_ID})" >&2
+                    fi
+                  done
+                fi
+              )
               exit 1
             fi
             break
