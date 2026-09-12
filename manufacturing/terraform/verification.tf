@@ -206,15 +206,43 @@ resource "null_resource" "verify_argocd_apps_healthy" {
     command = <<-EOT
       set -euo pipefail
 
+      # Actively help pods stuck in ImagePullBackOff/ErrImagePull rather
+      # than only waiting out Kubernetes' own exponential backoff (which
+      # grows up to 5 minutes between retries): deleting a stuck pod
+      # forces its owning ReplicaSet to recreate it immediately with a
+      # fresh pull attempt, instead of waiting for that pod's own backoff
+      # timer to expire. This is the expected state right after
+      # verify_service_builds finishes: kubelet's earlier pull attempts
+      # (against a tag that didn't exist in the registry yet) are still
+      # working through their own backoff independently of anything Argo
+      # CD itself does, regardless of the image now actually existing.
+      kick_stuck_image_pulls() {
+        kubectl get pods --all-namespaces -o json 2>/dev/null \
+          | jq -r '.items[]
+              | select((.status.containerStatuses // []) | any(.state.waiting.reason == "ImagePullBackOff" or .state.waiting.reason == "ErrImagePull"))
+              | "\(.metadata.namespace) \(.metadata.name)"' 2>/dev/null \
+          | while read -r ns name; do
+              [ -z "$${name}" ] && continue
+              echo "  ↻ restarting $${ns}/$${name} (stuck in image pull backoff)"
+              kubectl delete pod -n "$${ns}" "$${name}" --ignore-not-found >/dev/null 2>&1 || true
+            done
+      }
+
       echo "--- Waiting for all Argo CD Applications to be Synced and Healthy ---"
       PREV_NOT_READY=""
-      for i in $(seq 1 40); do
+      # 80 attempts (20 minutes), not 40 (10 minutes): confirmed directly
+      # that most apps reach Healthy well within the old budget, but a
+      # handful stayed Degraded/Progressing the entire 10 minutes — the
+      # ImagePullBackOff pattern above, which the kick below now also
+      # addresses directly rather than just giving it more time to
+      # resolve on its own.
+      for i in $(seq 1 80); do
         APPS_JSON=$(kubectl -n argocd get applications.argoproj.io -o json)
         TOTAL=$(echo "$${APPS_JSON}" | jq '.items | length')
 
         if [ "$${TOTAL}" -eq 0 ]; then
           if [ "no-apps" != "$${PREV_NOT_READY}" ] || [ $((i % 4)) -eq 0 ]; then
-            echo "  ...no Argo CD Applications found yet (attempt $${i}/40)"
+            echo "  ...no Argo CD Applications found yet (attempt $${i}/80)"
           fi
           PREV_NOT_READY="no-apps"
           sleep 15
@@ -239,10 +267,11 @@ resource "null_resource" "verify_argocd_apps_healthy" {
         # pushed useful detail out of Instruqt's own captured log buffer
         # in a previous failure.
         if [ "$${NOT_READY}" != "$${PREV_NOT_READY}" ] || [ $((i % 4)) -eq 0 ]; then
-          echo "  ...waiting on $${TOTAL} Argo CD Application(s), not yet ready (attempt $${i}/40):"
+          echo "  ...waiting on $${TOTAL} Argo CD Application(s), not yet ready (attempt $${i}/80):"
           echo "$${NOT_READY}" | sed 's/^/    /'
         fi
         PREV_NOT_READY="$${NOT_READY}"
+        kick_stuck_image_pulls
         sleep 15
       done
 
