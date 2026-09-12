@@ -108,11 +108,37 @@ resource "null_resource" "clear_conflicting_bootstrap_environments" {
             fi
           done
 
+          # An environment with a deployment target assigned can't be
+          # deleted either (confirmed directly: "The environment currently
+          # has one or more deployment targets assigned to it ... The
+          # environment contains the following deployment targets:
+          # kubernetes") — the pre-baked Kubernetes Agent machine
+          # (installed by configure-octopus.sh at image-build time)
+          # registers scoped to whatever environment existed then. Strip
+          # this environment from every machine that references it before
+          # deleting it, same read-modify-write pattern as the lifecycle
+          # loop above.
+          for M in $(curl -s -H "X-Octopus-ApiKey: $${API_KEY}" "$${OCTOPUS_URL}/api/$${SPACE_ID}/machines?take=100" | jq -r '.Items[].Id'); do
+            M_JSON=$(curl -s -H "X-Octopus-ApiKey: $${API_KEY}" "$${OCTOPUS_URL}/api/$${SPACE_ID}/machines/$${M}")
+            M_REFERENCED=$(echo "$${M_JSON}" | jq --arg id "$${ENV_ID}" '[.EnvironmentIds[]? | select(. == $id)] | length')
+            if [ "$${M_REFERENCED}" != "0" ]; then
+              M_PUT_HTTP=$(echo "$${M_JSON}" \
+                | jq --arg id "$${ENV_ID}" '.EnvironmentIds -= [$id] | del(.Links)' \
+                | curl -s -o /tmp/machine-put-response.json -w "%%{http_code}" -X PUT \
+                    -H "X-Octopus-ApiKey: $${API_KEY}" -H "Content-Type: application/json" \
+                    -d @- "$${OCTOPUS_URL}/api/$${SPACE_ID}/machines/$${M}")
+              if [ "$${M_PUT_HTTP}" -lt 200 ] || [ "$${M_PUT_HTTP}" -ge 300 ]; then
+                echo "  ✗ Failed to clear reference from deployment target $${M} (HTTP $${M_PUT_HTTP}): $(cat /tmp/machine-put-response.json)" >&2
+                exit 1
+              fi
+              echo "  Cleared reference from deployment target $${M}"
+            fi
+          done
+
           # Never discard this: curl only fails (non-zero exit) on a
           # network-level problem, not an HTTP error status — a 400/409
           # here (the environment is still referenced by something this
-          # script doesn't yet know to clear, e.g. a tenant's project
-          # scoping from an earlier partial apply) would otherwise be
+          # script doesn't yet know to clear) would otherwise be
           # swallowed by `>/dev/null`, print "Deleted" anyway, and leave
           # the real conflict to resurface as a confusing "already
           # exists" much later when the create step runs.
