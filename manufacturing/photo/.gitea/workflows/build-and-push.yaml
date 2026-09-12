@@ -161,6 +161,20 @@ jobs:
             --overwrite-mode=OverwriteExisting
 
       - name: Create Release in Octopus Deploy
+        # continue-on-error: this project's deployment process is empty
+        # until the Golden Argo Helm Template challenge adds a
+        # package-requiring step to it — Octopus can't plan a release
+        # for a specific package version against a process with nothing
+        # that references a package yet, and correctly refuses with "no
+        # viable release plans in any channels" the very first time this
+        # workflow runs (at track-seed time, before that challenge has
+        # been done). That's expected, not a real build failure: this
+        # step's only job is to have the image built and pushed, which
+        # already happened by this point regardless of whether a release
+        # can be created yet. Once the challenge adds that step, this
+        # same call starts succeeding on its own with no further change
+        # needed here.
+        continue-on-error: true
         uses: OctopusDeploy/create-release-action@v3
         with:
           api_key: ${{ secrets.OCTOPUS_API_KEY }}
