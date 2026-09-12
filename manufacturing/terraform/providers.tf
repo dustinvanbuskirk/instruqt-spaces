@@ -54,10 +54,11 @@ provider "gitea" {
 # to just supply as a variable. Rather than push that token-minting step
 # out to whatever's calling `terraform apply` (the Vagrantfile, or an
 # Instruqt track_scripts/setup-track-image), this data source does it
-# itself: port-forward to argocd-server, log in with the known "octopus"
-# account password, mint a fresh token. Runs on every plan/apply — cheap,
-# and Argo CD doesn't limit how many tokens an account can hold, so a
-# stale one left behind by a previous run is harmless.
+# itself: log in against the same host-mapped address the "argocd"
+# provider below uses, with the known "octopus" account password, and mint
+# a fresh token. Runs on every plan/apply — cheap, and Argo CD doesn't
+# limit how many tokens an account can hold, so a stale one left behind by
+# a previous run is harmless.
 data "external" "argocd_token" {
   program = ["bash", "-c", <<-EOT
     set -euo pipefail
@@ -82,35 +83,26 @@ data "external" "argocd_token" {
       exit 1
     fi
 
-    kubectl -n argocd port-forward svc/argocd-server 19443:443 >/tmp/argocd-tf-token-pf.log 2>&1 &
-    PF_PID=$!
-    trap 'kill "$PF_PID" >/dev/null 2>&1 || true' EXIT
-
-    READY=0
-    for i in $(seq 1 20); do
-      if (exec 3<>/dev/tcp/127.0.0.1/19443) 2>/dev/null; then
-        exec 3>&- 3<&- 2>/dev/null
-        READY=1
-        break
-      fi
-      echo "  ...waiting for the argocd-server port-forward (attempt $i/20)" >&2
-      sleep 15
-    done
-    if [ "$READY" -ne 1 ]; then
-      echo "Argo CD port-forward never came up: $(cat /tmp/argocd-tf-token-pf.log)" >&2
-      exit 1
-    fi
-
-    # A retry here too: the port answering doesn't guarantee argocd-server
-    # has finished its own internal startup (redis connection, initial
-    # sync) the instant it starts accepting TCP connections.
+    # Logs in directly against var.argocd_server_addr — the same
+    # host-mapped NodePort address the "argocd" provider itself uses below
+    # for every real resource operation — rather than this script's own
+    # separate `kubectl port-forward` on a different, throwaway port. That
+    # used to open a tunnel on 19443 just long enough to mint a token, then
+    # tear it down (the trap below no longer exists) the moment this
+    # script exited — while the provider went on trying to use
+    # var.argocd_server_addr (localhost:9443) for every actual resource
+    # operation. That mismatch surfaced as
+    # "dial tcp 127.0.0.1:19443: connect: connection refused" the moment
+    # Terraform tried to create the first real Argo CD resource, since
+    # nothing was listening on 19443 by then. Logging in against the same
+    # address the provider uses removes the mismatch entirely.
     TOKEN=""
-    for i in $(seq 1 10); do
-      if argocd login localhost:19443 --username "${var.argocd_username}" --password "${var.argocd_password}" --insecure --plaintext >/dev/null 2>/tmp/argocd-tf-login.log; then
+    for i in $(seq 1 20); do
+      if argocd login "${var.argocd_server_addr}" --username "${var.argocd_username}" --password "${var.argocd_password}" --insecure --plaintext >/dev/null 2>/tmp/argocd-tf-login.log; then
         TOKEN=$(argocd account generate-token --account "${var.argocd_username}" --insecure --plaintext 2>/tmp/argocd-tf-token-gen.log || true)
         [ -n "$TOKEN" ] && break
       fi
-      echo "  ...waiting for argocd login to succeed (attempt $i/10)" >&2
+      echo "  ...waiting for argocd login to succeed (attempt $i/20)" >&2
       sleep 15
     done
     if [ -z "$TOKEN" ]; then
@@ -127,8 +119,8 @@ data "external" "argocd_token" {
 
 # Same host-vs-in-cluster distinction as Gitea above: server_addr here is
 # the host-mapped NodePort Terraform itself talks to for its own resource
-# operations (separate from the port-forward the data source above uses
-# just to mint the token).
+# operations — the same address the data source above logs into, so
+# there's exactly one Argo CD endpoint this whole file ever talks to.
 provider "argocd" {
   server_addr = var.argocd_server_addr
   auth_token  = data.external.argocd_token.result.token

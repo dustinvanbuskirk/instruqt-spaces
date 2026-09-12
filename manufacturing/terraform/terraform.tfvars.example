@@ -6,7 +6,7 @@ gitea_url      = "http://localhost:3000"
 gitea_username = "admin"
 gitea_password = "your-gitea-password"
 
-argocd_server_addr = "localhost:19443"
+argocd_server_addr = "localhost:9443"
 argocd_username    = "octopus"
 argocd_password    = "your-argocd-password"
 argocd_insecure    = true

@@ -14,16 +14,31 @@
 # one, once), that collision has to be handled here, not fixed by hand each
 # time.
 #
+# All four of this configuration's own environment names are cleared here
+# too (SQA, UAT, "Lead Site Production", "Production"), not just the one
+# pre-baked collision — because on an Instruqt track sandbox,
+# track_scripts/setup-track-image does `rm -rf` + a fresh `git clone` of
+# this whole repo (Terraform state included) on *every* run, while the
+# same underlying Octopus instance can persist across several such runs
+# (confirmed directly: a run that got partway through creating these
+# environments before failing on a later resource left them behind, and
+# the next run's blank state tried to create them again — "An environment
+# with this name already exists in this space"). Terraform's own state
+# can't be trusted to reflect what already exists on the target instance
+# in that situation, so this deletes any environment with one of these
+# names unconditionally before the resources below try to create them,
+# regardless of whether the name came from the original image bake or
+# from this configuration's own previous, later-interrupted run.
+#
 # null_resource's own provisioner only runs once, at the resource's own
 # creation — never again on a later `terraform apply` against the same
 # state/backend, only if applied against a genuinely fresh one (empty
-# state, e.g. a new box). Combined with environments.tf's depends_on, that
-# guarantees this script always runs *before* our own "Production"
-# environment resource is created, so any environment literally named
-# "Production" found here can only be the pre-existing baked-in one, never
-# something Terraform itself is managing — safe to delete unconditionally,
-# with no risk of this racing/fighting with our own resource on a later
-# apply.
+# state, e.g. a new box or a fresh clone). Combined with environments.tf's
+# depends_on, that guarantees this script always runs *before* any of our
+# own environment resources are created, so it's always safe to delete
+# unconditionally here — there's no risk of racing/fighting with a
+# same-apply resource, only ever clearing what a previous run already
+# left behind (or the original bake).
 resource "null_resource" "clear_conflicting_bootstrap_environments" {
   triggers = {
     space_id = var.octopus_space_id
@@ -42,40 +57,55 @@ resource "null_resource" "clear_conflicting_bootstrap_environments" {
     command = <<-EOT
       set -euo pipefail
 
-      # Extend this list if a future box bake adds more baked-in
-      # environments that collide with names this configuration creates.
-      for NAME in Production; do
-        ENV_ID=$(curl -s -H "X-Octopus-ApiKey: $${API_KEY}" \
-            "$${OCTOPUS_URL}/api/$${SPACE_ID}/environments?partialName=$${NAME}&take=100" \
+      # All four of this configuration's own environment names — see the
+      # top-of-file comment for why this can't be narrowed to just the
+      # one pre-baked "Production" collision.
+      for NAME in SQA UAT "Lead Site Production" Production; do
+        # -G --data-urlencode (not a literal "?partialName=$NAME&..." query
+        # string): "Lead Site Production" has spaces, and only Production/
+        # SQA/UAT happened to not need encoding, which is exactly the kind
+        # of gap that goes unnoticed until the one name with a space in it
+        # silently doesn't get found.
+        ENV_IDS=$(curl -s -G -H "X-Octopus-ApiKey: $${API_KEY}" \
+            --data-urlencode "partialName=$${NAME}" \
+            --data-urlencode "take=100" \
+            "$${OCTOPUS_URL}/api/$${SPACE_ID}/environments" \
           | jq -r --arg n "$${NAME}" '.Items[] | select(.Name == $n) | .Id')
 
-        if [ -z "$${ENV_ID}" ]; then
+        if [ -z "$${ENV_IDS}" ]; then
           echo "No pre-existing '$${NAME}' environment to clear — skipping"
           continue
         fi
-        echo "Found pre-existing '$${NAME}' environment ($${ENV_ID}) — clearing lifecycle references and deleting it"
 
-        # An environment referenced by a lifecycle phase can't be deleted
-        # until that reference is gone (confirmed directly: the API
-        # rejects the delete otherwise) — strip it from every phase of
-        # every lifecycle that references it first.
-        for LC in $(curl -s -H "X-Octopus-ApiKey: $${API_KEY}" "$${OCTOPUS_URL}/api/$${SPACE_ID}/lifecycles?take=100" | jq -r '.Items[].Id'); do
-          LC_JSON=$(curl -s -H "X-Octopus-ApiKey: $${API_KEY}" "$${OCTOPUS_URL}/api/$${SPACE_ID}/lifecycles/$${LC}")
-          REFERENCED=$(echo "$${LC_JSON}" | jq --arg id "$${ENV_ID}" \
-            '[.Phases[] | select((.AutomaticDeploymentTargets + .OptionalDeploymentTargets) | index($id))] | length')
-          if [ "$${REFERENCED}" != "0" ]; then
-            echo "$${LC_JSON}" \
-              | jq --arg id "$${ENV_ID}" '
-                  .Phases = [.Phases[] | .AutomaticDeploymentTargets -= [$id] | .OptionalDeploymentTargets -= [$id]]
-                  | del(.Links)' \
-              | curl -s -X PUT -H "X-Octopus-ApiKey: $${API_KEY}" -H "Content-Type: application/json" \
-                  -d @- "$${OCTOPUS_URL}/api/$${SPACE_ID}/lifecycles/$${LC}" >/dev/null
-            echo "  Cleared reference from lifecycle $${LC}"
-          fi
+        # Looped rather than assumed-single: a name can match more than
+        # one environment here (e.g. two earlier runs each got partway
+        # through creating one before failing later), and only clearing
+        # the first would leave the create step colliding again.
+        for ENV_ID in $${ENV_IDS}; do
+          echo "Found pre-existing '$${NAME}' environment ($${ENV_ID}) — clearing lifecycle references and deleting it"
+
+          # An environment referenced by a lifecycle phase can't be deleted
+          # until that reference is gone (confirmed directly: the API
+          # rejects the delete otherwise) — strip it from every phase of
+          # every lifecycle that references it first.
+          for LC in $(curl -s -H "X-Octopus-ApiKey: $${API_KEY}" "$${OCTOPUS_URL}/api/$${SPACE_ID}/lifecycles?take=100" | jq -r '.Items[].Id'); do
+            LC_JSON=$(curl -s -H "X-Octopus-ApiKey: $${API_KEY}" "$${OCTOPUS_URL}/api/$${SPACE_ID}/lifecycles/$${LC}")
+            REFERENCED=$(echo "$${LC_JSON}" | jq --arg id "$${ENV_ID}" \
+              '[.Phases[] | select((.AutomaticDeploymentTargets + .OptionalDeploymentTargets) | index($id))] | length')
+            if [ "$${REFERENCED}" != "0" ]; then
+              echo "$${LC_JSON}" \
+                | jq --arg id "$${ENV_ID}" '
+                    .Phases = [.Phases[] | .AutomaticDeploymentTargets -= [$id] | .OptionalDeploymentTargets -= [$id]]
+                    | del(.Links)' \
+                | curl -s -X PUT -H "X-Octopus-ApiKey: $${API_KEY}" -H "Content-Type: application/json" \
+                    -d @- "$${OCTOPUS_URL}/api/$${SPACE_ID}/lifecycles/$${LC}" >/dev/null
+              echo "  Cleared reference from lifecycle $${LC}"
+            fi
+          done
+
+          curl -s -X DELETE -H "X-Octopus-ApiKey: $${API_KEY}" "$${OCTOPUS_URL}/api/$${SPACE_ID}/environments/$${ENV_ID}" >/dev/null
+          echo "  Deleted environment $${ENV_ID}"
         done
-
-        curl -s -X DELETE -H "X-Octopus-ApiKey: $${API_KEY}" "$${OCTOPUS_URL}/api/$${SPACE_ID}/environments/$${ENV_ID}" >/dev/null
-        echo "  Deleted environment $${ENV_ID}"
       done
     EOT
   }
