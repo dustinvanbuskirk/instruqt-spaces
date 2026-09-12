@@ -93,9 +93,29 @@ resource "null_resource" "verify_service_builds" {
                           >"$${LOG_FILE}" 2>/dev/null; then
                         LINE_COUNT=$(wc -l <"$${LOG_FILE}" 2>/dev/null || echo "?")
                         echo "  full log for job '$${JOB_NAME}' ($${LINE_COUNT} lines) saved to: $${LOG_FILE}" >&2
-                        echo "  (open it from the Terminal tab for the complete log — the excerpt below is just the tail)" >&2
-                        echo "  --- last 40 lines ---" >&2
-                        tail -40 "$${LOG_FILE}" | sed 's/^/    /' >&2
+                        echo "  (open it from the Terminal tab for the complete log — the excerpt below is only around the failing step)" >&2
+                        # The tail end of the log is *always* the post-job
+                        # cleanup hooks (they run via always(), regardless
+                        # of where the real failure was) — confirmed
+                        # directly: a tail-40 excerpt showed nothing but
+                        # "Post Checkout code"/"Post Docker Buildx"
+                        # succeeding, never the actual error, even once we
+                        # knew exactly which step (by name, from the steps[]
+                        # dump above) had failed. Locating that step's own
+                        # "Run <name>" marker line and excerpting forward
+                        # from there lands on the actual failure instead.
+                        FAILED_STEP=$(echo "$${JOB}" | jq -r '[.steps[]? | select(.conclusion == "failure")] | first.name // empty')
+                        START_LINE=""
+                        if [ -n "$${FAILED_STEP}" ]; then
+                          START_LINE=$(grep -n -F "Run $${FAILED_STEP}" "$${LOG_FILE}" | head -1 | cut -d: -f1)
+                        fi
+                        if [ -n "$${START_LINE}" ]; then
+                          echo "  --- log from '$${FAILED_STEP}' (line $${START_LINE}), next 80 lines ---" >&2
+                          tail -n "+$${START_LINE}" "$${LOG_FILE}" | head -80 | sed 's/^/    /' >&2
+                        else
+                          echo "  (could not locate the failing step's marker in the log — showing the tail instead)" >&2
+                          tail -40 "$${LOG_FILE}" | sed 's/^/    /' >&2
+                        fi
                       else
                         echo "  (could not fetch log for job $${JOB_ID})" >&2
                       fi
