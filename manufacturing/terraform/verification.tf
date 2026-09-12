@@ -74,23 +74,31 @@ resource "null_resource" "verify_service_builds" {
                     echo "  job '$${JOB_NAME}' (id=$${JOB_ID}): conclusion=$${JOB_CONCLUSION}" >&2
                     echo "$${JOB}" | jq -r '.steps[]? | select(.conclusion != "success" and .conclusion != "") | "    ✗ step: \(.name) (\(.status)/\(.conclusion))"' >&2
                     if [ -n "$${JOB_ID}" ]; then
-                      # Deliberately the *full* log, not a tail. Whatever
-                      # actually failed could be anywhere in it (the tail
-                      # end is often just later steps' cleanup/post-run
-                      # output, as seen directly: a tail-80 dump showed
-                      # nothing but "Post Checkout code" succeeding and
-                      # container cleanup, cutting off before whatever
-                      # step actually failed). Secret values Gitea has
-                      # already masked server-side (e.g. "***" in place of
-                      # a matched secret) stay masked here too — this
-                      # can't un-redact anything Gitea itself redacted,
-                      # it only stops *this script* from truncating
-                      # further on top of that.
-                      echo "  --- full log for job '$${JOB_NAME}' ---" >&2
-                      curl -sf -u "$${GITEA_USERNAME}:$${GITEA_PASSWORD}" \
-                        "$${GITEA_URL}/api/v1/repos/$${GITEA_USERNAME}/$${repo}/actions/jobs/$${JOB_ID}/logs" 2>/dev/null \
-                        | sed 's/^/    /' >&2 \
-                        || echo "    (could not fetch log for job $${JOB_ID})" >&2
+                      # Persisted to a file rather than relied on to show up
+                      # in full in the Instruqt track log: even printing the
+                      # *entire* log inline (a prior version of this script
+                      # tail-limited it — removed for exactly this reason),
+                      # two separate failures still showed nothing past the
+                      # tail-end cleanup/post-step output, confirming
+                      # Instruqt's own log viewer caps what it displays or
+                      # lets you copy, independent of what this script
+                      # prints. The file is readable in full from the
+                      # Terminal tab regardless of that cap. Secret values
+                      # Gitea has already masked server-side (e.g. "***" in
+                      # place of a matched secret) stay masked here too —
+                      # nothing here can un-redact what Gitea itself redacted.
+                      LOG_FILE="/tmp/gitea-build-failure-$${repo}-job-$${JOB_ID}.log"
+                      if curl -sf -u "$${GITEA_USERNAME}:$${GITEA_PASSWORD}" \
+                          "$${GITEA_URL}/api/v1/repos/$${GITEA_USERNAME}/$${repo}/actions/jobs/$${JOB_ID}/logs" \
+                          >"$${LOG_FILE}" 2>/dev/null; then
+                        LINE_COUNT=$(wc -l <"$${LOG_FILE}" 2>/dev/null || echo "?")
+                        echo "  full log for job '$${JOB_NAME}' ($${LINE_COUNT} lines) saved to: $${LOG_FILE}" >&2
+                        echo "  (open it from the Terminal tab for the complete log — the excerpt below is just the tail)" >&2
+                        echo "  --- last 40 lines ---" >&2
+                        tail -40 "$${LOG_FILE}" | sed 's/^/    /' >&2
+                      else
+                        echo "  (could not fetch log for job $${JOB_ID})" >&2
+                      fi
                     fi
                   done
                 fi
