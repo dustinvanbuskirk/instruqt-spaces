@@ -27,18 +27,26 @@ resource "null_resource" "verify_service_builds" {
     command = <<-EOT
       set -euo pipefail
 
+      # 90 attempts (15 minutes) per repo, not 40 (6.67 minutes): gitea-runner's
+      # capacity is 1 (see instruqt-octopus-host-images' gitea/config.yaml,
+      # a shared host-image setting this Terraform doesn't own), so only one
+      # of photo/probe's builds can run at a time. Confirmed directly:
+      # whichever gets picked up second sits "queued" for this box's own
+      # observed single-build duration (~6-7 minutes) before it even starts,
+      # which alone can exceed a 40-attempt budget before the build itself
+      # has had any chance to complete.
       for repo in manufacturing-photo manufacturing-probe; do
         echo "--- Waiting for $${repo}'s v1.0.0 build-and-push run to complete ---"
         DONE=0
         PREV_STATE=""
-        for i in $(seq 1 40); do
+        for i in $(seq 1 90); do
           RUN=$(curl -sf -u "$${GITEA_USERNAME}:$${GITEA_PASSWORD}" \
               "$${GITEA_URL}/api/v1/repos/$${GITEA_USERNAME}/$${repo}/actions/runs?limit=1" \
             | jq -c '.workflow_runs[0] // empty')
 
           if [ -z "$${RUN}" ]; then
             if [ "no-run" != "$${PREV_STATE}" ] || [ $((i % 6)) -eq 0 ]; then
-              echo "  ...no runs found yet for $${repo} (attempt $${i}/40)"
+              echo "  ...no runs found yet for $${repo} (attempt $${i}/90)"
             fi
             PREV_STATE="no-run"
             sleep 10
@@ -59,7 +67,7 @@ resource "null_resource" "verify_service_builds" {
           # step-detail dump below.
           CUR_STATE="$${STATUS}:$${CONCLUSION}"
           if [ "$${CUR_STATE}" != "$${PREV_STATE}" ] || [ $((i % 6)) -eq 0 ]; then
-            echo "  $${repo} latest run (id=$${RUN_ID}): status=$${STATUS}, conclusion=$${CONCLUSION} (attempt $${i}/40)"
+            echo "  $${repo} latest run (id=$${RUN_ID}): status=$${STATUS}, conclusion=$${CONCLUSION} (attempt $${i}/90)"
           fi
           PREV_STATE="$${CUR_STATE}"
 
