@@ -17,6 +17,15 @@
 # by-name PATCH is unambiguous and idempotent — safe to re-run on every
 # apply, same as the rest of this project's self-healing null_resources.
 resource "octopusdeploy_environment" "sqa" {
+  # See bootstrap-cleanup.tf — all four of these environment names are
+  # cleared there (not just "Production", the one pre-baked collision),
+  # so all four must wait on it: without this depends_on, Terraform is
+  # free to create this resource concurrently with (or before) that
+  # cleanup step, which could then find and delete the environment this
+  # same apply just created, since it has no way to distinguish "leftover
+  # from an earlier run" from "created a second ago."
+  depends_on = [null_resource.clear_conflicting_bootstrap_environments]
+
   space_id                     = var.octopus_space_id
   name                         = "SQA"
   description                  = "Software Quality Assurance environment for testing"
@@ -25,6 +34,9 @@ resource "octopusdeploy_environment" "sqa" {
 }
 
 resource "octopusdeploy_environment" "uat" {
+  # See sqa above for why this depends_on is required.
+  depends_on = [null_resource.clear_conflicting_bootstrap_environments]
+
   space_id                     = var.octopus_space_id
   name                         = "UAT"
   description                  = "User Acceptance Testing / Beta environment"
@@ -33,6 +45,9 @@ resource "octopusdeploy_environment" "uat" {
 }
 
 resource "octopusdeploy_environment" "lead_site_production" {
+  # See sqa above for why this depends_on is required.
+  depends_on = [null_resource.clear_conflicting_bootstrap_environments]
+
   space_id                     = var.octopus_space_id
   name                         = "Lead Site Production"
   description                  = "Pre-production validation at the primary lead site (Fab 11) only, between UAT and Production"
