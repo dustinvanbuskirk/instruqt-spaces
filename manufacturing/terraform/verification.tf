@@ -74,10 +74,22 @@ resource "null_resource" "verify_service_builds" {
                     echo "  job '$${JOB_NAME}' (id=$${JOB_ID}): conclusion=$${JOB_CONCLUSION}" >&2
                     echo "$${JOB}" | jq -r '.steps[]? | select(.conclusion != "success" and .conclusion != "") | "    ✗ step: \(.name) (\(.status)/\(.conclusion))"' >&2
                     if [ -n "$${JOB_ID}" ]; then
-                      echo "  --- last 80 lines of job '$${JOB_NAME}' log ---" >&2
+                      # Deliberately the *full* log, not a tail. Whatever
+                      # actually failed could be anywhere in it (the tail
+                      # end is often just later steps' cleanup/post-run
+                      # output, as seen directly: a tail-80 dump showed
+                      # nothing but "Post Checkout code" succeeding and
+                      # container cleanup, cutting off before whatever
+                      # step actually failed). Secret values Gitea has
+                      # already masked server-side (e.g. "***" in place of
+                      # a matched secret) stay masked here too — this
+                      # can't un-redact anything Gitea itself redacted,
+                      # it only stops *this script* from truncating
+                      # further on top of that.
+                      echo "  --- full log for job '$${JOB_NAME}' ---" >&2
                       curl -sf -u "$${GITEA_USERNAME}:$${GITEA_PASSWORD}" \
                         "$${GITEA_URL}/api/v1/repos/$${GITEA_USERNAME}/$${repo}/actions/jobs/$${JOB_ID}/logs" 2>/dev/null \
-                        | tail -80 | sed 's/^/    /' >&2 \
+                        | sed 's/^/    /' >&2 \
                         || echo "    (could not fetch log for job $${JOB_ID})" >&2
                     fi
                   done
