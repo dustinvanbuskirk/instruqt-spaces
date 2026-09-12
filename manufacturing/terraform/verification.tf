@@ -127,8 +127,32 @@ resource "null_resource" "verify_service_builds" {
                           START_LINE=$(grep -n -F "Run $${FAILED_STEP}" "$${LOG_FILE}" | head -1 | cut -d: -f1)
                         fi
                         if [ -n "$${START_LINE}" ]; then
-                          echo "  --- log from '$${FAILED_STEP}' (line $${START_LINE}), next 80 lines ---" >&2
-                          tail -n "+$${START_LINE}" "$${LOG_FILE}" | head -80 | sed 's/^/    /' >&2
+                          # Span the whole step, not an arbitrary fixed
+                          # line count: a real `docker buildx build --push`
+                          # step can log hundreds of lines (base image
+                          # pulls, layer-by-layer output), and a fixed
+                          # head -80 window cut off the actual error
+                          # entirely — confirmed directly, the excerpt
+                          # showed this step's own input evaluation, then
+                          # jumped straight to its always()-triggered
+                          # post-hook with nothing shown in between. The
+                          # next "⭐ Run " marker after this step's own
+                          # reliably marks where the next step (usually
+                          # this same step's own post-hook) begins, so
+                          # print up to — not including — that line; a
+                          # generous 400-line cap is a last-resort safety
+                          # net only, in case no next marker exists at all.
+                          REL_END=$(tail -n "+$((START_LINE + 1))" "$${LOG_FILE}" | grep -n -F '⭐ Run ' | head -1 | cut -d: -f1)
+                          if [ -n "$${REL_END}" ]; then
+                            END_LINE=$((START_LINE + REL_END - 1))
+                            if [ $((END_LINE - START_LINE)) -gt 400 ]; then
+                              END_LINE=$((START_LINE + 400))
+                            fi
+                          else
+                            END_LINE=$((START_LINE + 400))
+                          fi
+                          echo "  --- log from '$${FAILED_STEP}' (lines $${START_LINE}-$${END_LINE}) ---" >&2
+                          sed -n "$${START_LINE},$${END_LINE}p" "$${LOG_FILE}" | sed 's/^/    /' >&2
                         else
                           echo "  (could not locate the failing step's marker in the log — showing the tail instead)" >&2
                           tail -40 "$${LOG_FILE}" | sed 's/^/    /' >&2
