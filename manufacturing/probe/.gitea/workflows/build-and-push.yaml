@@ -72,19 +72,40 @@ jobs:
               http = true
               insecure = true
 
-      # A per-job DNS workaround used to live here (the runner-images:
-      # ubuntu-latest job container's own systemd-resolved stub, 127.0.0.53,
-      # doesn't forward "gitea" to Docker's embedded DNS for custom-network
-      # container names, so docker/login-action failed with "lookup gitea
-      # on 127.0.0.53:53: server misbehaving"). That's now handled once, for
-      # every job, at container-creation time instead: gitea-runner's
-      # container.options includes --add-host=gitea:host-gateway (see
-      # track_scripts/setup-track-image in instruqt-advanced-training-gitops),
-      # which needs no per-job resolution step and no IP to keep in sync —
-      # this is fundamentally a loopback case (the job container calling
-      # back to a service on its own host), and gitea's registry is already
-      # published on that host's port 3000, which host-gateway routes to
-      # directly.
+      - name: Work around job container DNS resolution for gitea
+        run: |
+          # gitea-runner's container.options now includes
+          # --add-host=gitea:host-gateway (see track_scripts/setup-track-image
+          # in instruqt-advanced-training-gitops), which should make this
+          # step redundant — but two consecutive builds still failed with
+          # the exact same error this step exists to work around, meaning
+          # that runner-level fix is not (yet, as far as confirmed) reliably
+          # taking effect. Restored as the proven fallback: this exact
+          # getent/nslookup/etc.-hosts sequence has been directly observed
+          # running inside the job container in prior logs, unlike the
+          # runner-level option whose actual effect on job container
+          # creation has never been directly confirmed. If gitea already
+          # resolves (the runner-level fix working), getent succeeds
+          # immediately and this is a harmless no-op.
+          #
+          # The runner-images:ubuntu-latest job container runs its own
+          # systemd-resolved stub (127.0.0.53), which doesn't forward to
+          # Docker's real embedded DNS (127.0.0.11) for custom-network
+          # container names — confirmed directly: docker/login-action
+          # failed with "lookup gitea on 127.0.0.53:53: server misbehaving"
+          # even though gitea:3000 is reachable and resolves fine via
+          # 127.0.0.11. Pinning it in /etc/hosts sidesteps the broken
+          # local resolver entirely.
+          GITEA_IP=$(getent ahostsv4 gitea 2>/dev/null | awk '{print $1; exit}')
+          if [ -z "${GITEA_IP}" ]; then
+            GITEA_IP=$(nslookup gitea 127.0.0.11 2>/dev/null | awk '/^Address: / {print $2}' | tail -1)
+          fi
+          if [ -z "${GITEA_IP}" ]; then
+            echo "::error::Could not resolve gitea via 127.0.0.11 either — failing fast instead of a confusing later error"
+            exit 1
+          fi
+          echo "${GITEA_IP} gitea" | sudo tee -a /etc/hosts
+          echo "Pinned gitea -> ${GITEA_IP} in /etc/hosts"
 
       - name: Login to Gitea Container Registry
         uses: docker/login-action@v3
