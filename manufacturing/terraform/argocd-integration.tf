@@ -4,7 +4,7 @@
 # uninstalled on every apply, even though instruqt-octopus-host-images'
 # configure-octopus.sh installs it once at image-build/provision time
 # (Helm release "octopus-argo" in namespace
-# "octopus-argo-cd-gateway", via chart
+# "octo-argo-gateway-octopus-argo", via chart
 # octopusdeploy/octopus-argocd-gateway-chart — see that script's "ArgoCD
 # gateway" section, lines ~368-429). This project now has a dedicated
 # challenge (instruqt-advanced-training-gitops' new 01-... challenge) whose
@@ -15,7 +15,16 @@
 # the environment every learner boots into must actually have no gateway
 # installed, rather than have it pre-solved by Terraform.
 #
-# Namespace deleted too (not just `helm uninstall`): a bare uninstall
+# instruqt-octopus-host-images is read-only from here on (no one has write
+# access to it, confirmed directly) — configure-octopus.sh will always
+# install the gateway into "octo-argo-gateway-octopus-argo" and there is no
+# way to change that at the source. The challenge's own instructions
+# install into the shorter "octopus-argo-cd-gateway" instead (a separate,
+# deliberate improvement that only affects what the *learner* types), so
+# this uninstalls from BOTH namespaces on every apply — whichever one
+# actually has something in it wins, and checking the other is a no-op.
+#
+# Namespaces deleted too (not just `helm uninstall`): a bare uninstall
 # leaves the namespace (and anything Helm doesn't own inside it) behind,
 # so a learner's fresh `helm upgrade --install --create-namespace` isn't
 # quite starting from the same clean slate the image-build-time install
@@ -46,24 +55,32 @@ resource "null_resource" "uninstall_argocd_gateway" {
     command = <<-EOT
       set -euo pipefail
 
-      RELEASE="octopus-argo"
-      NAMESPACE="octopus-argo-cd-gateway"
+      # "octopus-argo" in "octo-argo-gateway-octopus-argo": what the
+      # immutable, no-write-access configure-octopus.sh always creates.
+      # "octopus-argo-cd-gateway" in "octopus-argo-cd-gateway": release,
+      # namespace, and registration.octopus.name all match on purpose — what
+      # this track's own challenge instructs a learner to create instead.
+      # Check and clear both pairs — see the top-of-file comment.
+      for PAIR in "octopus-argo:octo-argo-gateway-octopus-argo" "octopus-argo-cd-gateway:octopus-argo-cd-gateway"; do
+        RELEASE="$${PAIR%%:*}"
+        NAMESPACE="$${PAIR##*:}"
 
-      if helm status "$${RELEASE}" -n "$${NAMESPACE}" >/dev/null 2>&1; then
-        echo "Uninstalling Helm release '$${RELEASE}' from namespace '$${NAMESPACE}'..."
-        helm uninstall "$${RELEASE}" -n "$${NAMESPACE}"
-        echo "✓ Uninstalled '$${RELEASE}'"
-      else
-        echo "No existing '$${RELEASE}' release in '$${NAMESPACE}' — nothing to uninstall"
-      fi
+        if helm status "$${RELEASE}" -n "$${NAMESPACE}" >/dev/null 2>&1; then
+          echo "Uninstalling Helm release '$${RELEASE}' from namespace '$${NAMESPACE}'..."
+          helm uninstall "$${RELEASE}" -n "$${NAMESPACE}"
+          echo "✓ Uninstalled '$${RELEASE}' from '$${NAMESPACE}'"
+        else
+          echo "No existing '$${RELEASE}' release in '$${NAMESPACE}' — nothing to uninstall"
+        fi
 
-      if kubectl get namespace "$${NAMESPACE}" >/dev/null 2>&1; then
-        echo "Deleting namespace '$${NAMESPACE}'..."
-        kubectl delete namespace "$${NAMESPACE}" --ignore-not-found --wait=true --timeout=60s
-        echo "✓ Deleted namespace '$${NAMESPACE}'"
-      else
-        echo "Namespace '$${NAMESPACE}' doesn't exist — nothing to delete"
-      fi
+        if kubectl get namespace "$${NAMESPACE}" >/dev/null 2>&1; then
+          echo "Deleting namespace '$${NAMESPACE}'..."
+          kubectl delete namespace "$${NAMESPACE}" --ignore-not-found --wait=true --timeout=60s
+          echo "✓ Deleted namespace '$${NAMESPACE}'"
+        else
+          echo "Namespace '$${NAMESPACE}' doesn't exist — nothing to delete"
+        fi
+      done
 
       INSTANCE_IDS=$(curl -sf -H "X-Octopus-ApiKey: $${OCTOPUS_API_KEY}" \
         "$${OCTOPUS_URL}/api/spaces/$${SPACE_ID}/argocdinstances/summaries?partialName=" \
