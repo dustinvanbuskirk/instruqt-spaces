@@ -35,11 +35,12 @@
 # uninstalling the gateway only removes the cluster-side pod, not the
 # Octopus-side record it registered on startup. Confirmed directly: after
 # uninstalling the Helm release alone, Octopus's Infrastructure > Argo CD
-# Instances page kept showing "octopus-argo" as still connected. The
-# DELETE endpoint's exact shape isn't confirmed anywhere in Octopus's docs
-# (same gap as the GET/PUT calls already used above and in check scripts),
-# but mirrors the same /api/spaces/{spaceId}/argocdinstances/{id} path —
-# best-effort, treating a 404 as already-gone.
+# Instances page kept showing "octopus-argo" as still connected. Endpoint
+# confirmed live: DELETE /api/{spaceId}/argocdgateways/{id} (no "spaces/"
+# prefix, collection is "argocdgateways" — the summaries/read-side listing
+# above is the only place "argocdinstances" is the correct collection name)
+# returns HTTP 200 and the summaries list drops to TotalCount: 0
+# immediately after.
 resource "null_resource" "uninstall_argocd_gateway" {
   triggers = {
     always_run = timestamp()
@@ -82,17 +83,30 @@ resource "null_resource" "uninstall_argocd_gateway" {
         fi
       done
 
+      # The summaries endpoint's real shape is {"Resources": [...],
+      # "TotalCount": N} — NOT {"Items": [...]} like every other Octopus
+      # list endpoint used elsewhere in this project. Confirmed directly
+      # (a previous version of this used .Items and silently resolved to
+      # nothing every time, so this resource never actually deregistered
+      # anything despite reporting success). Each entry's own .Id
+      # ("ArgoCDGateways-1") is the resource id.
       INSTANCE_IDS=$(curl -sf -H "X-Octopus-ApiKey: $${OCTOPUS_API_KEY}" \
         "$${OCTOPUS_URL}/api/spaces/$${SPACE_ID}/argocdinstances/summaries?partialName=" \
-        | jq -r '.Items[]?.Id // empty')
+        | jq -r '.Resources[]?.Id // empty')
 
       if [ -z "$${INSTANCE_IDS}" ]; then
         echo "No Argo CD Instance registered in Octopus — nothing to deregister"
       else
         for INSTANCE_ID in $${INSTANCE_IDS}; do
+          # Confirmed directly: the delete path is /api/{spaceId}/argocdgateways/{id}
+          # — no "spaces/" prefix, and the collection is "argocdgateways",
+          # not "argocdinstances" (that name is only used by the read-side
+          # summaries/instances listing endpoint above). Matches the
+          # registration job's own POST target confirmed earlier
+          # (Spaces-1/argocdgateways).
           HTTP=$(curl -s -o /tmp/argocd-instance-delete-response.json -w "%%{http_code}" -X DELETE \
             -H "X-Octopus-ApiKey: $${OCTOPUS_API_KEY}" \
-            "$${OCTOPUS_URL}/api/spaces/$${SPACE_ID}/argocdinstances/$${INSTANCE_ID}")
+            "$${OCTOPUS_URL}/api/$${SPACE_ID}/argocdgateways/$${INSTANCE_ID}")
           if echo "$${HTTP}" | grep -qE '^(2|404)'; then
             echo "✓ Deregistered Argo CD Instance $${INSTANCE_ID} from Octopus (HTTP $${HTTP})"
           else
