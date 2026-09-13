@@ -206,25 +206,32 @@ resource "null_resource" "verify_argocd_apps_healthy" {
     command = <<-EOT
       set -euo pipefail
 
-      # Actively help pods stuck in ImagePullBackOff/ErrImagePull rather
-      # than only waiting out Kubernetes' own exponential backoff (which
-      # grows up to 5 minutes between retries): deleting a stuck pod
-      # forces its owning ReplicaSet to recreate it immediately with a
-      # fresh pull attempt, instead of waiting for that pod's own backoff
-      # timer to expire. This is the expected state right after
-      # verify_service_builds finishes: kubelet's earlier pull attempts
-      # (against a tag that didn't exist in the registry yet) are still
-      # working through their own backoff independently of anything Argo
-      # CD itself does, regardless of the image now actually existing.
-      kick_stuck_image_pulls() {
-        kubectl get pods --all-namespaces -o json 2>/dev/null \
-          | jq -r '.items[]
-              | select((.status.containerStatuses // []) | any(.state.waiting.reason == "ImagePullBackOff" or .state.waiting.reason == "ErrImagePull"))
-              | "\(.metadata.namespace) \(.metadata.name)"' 2>/dev/null \
-          | while read -r ns name; do
-              [ -z "$${name}" ] && continue
-              echo "  ↻ restarting $${ns}/$${name} (stuck in image pull backoff)"
-              kubectl delete pod -n "$${ns}" "$${name}" --ignore-not-found >/dev/null 2>&1 || true
+      # Deletes every pod in a degraded/unhealthy app's own destination
+      # namespace, forcing a clean restart regardless of the specific
+      # underlying reason (ImagePullBackOff, CrashLoopBackOff, a stale
+      # config, etc). Broader than only targeting ImagePullBackOff
+      # specifically, which an earlier version of this script did on
+      # every single poll — confirmed directly that the same set of
+      # apps stayed Degraded, completely unchanged, for over 20 minutes
+      # straight under that narrower approach, meaning whatever was
+      # actually wrong with them wasn't an image pull problem at all.
+      # Called at two fixed checkpoints (attempt 2, then attempt 20)
+      # rather than every poll — enough to give a genuinely stuck app a
+      # real kick without repeatedly restarting pods that just need a
+      # little more time to settle on their own.
+      remediate_degraded_apps() {
+        local checkpoint="$1"
+        echo "  ⚠ checkpoint (attempt $${checkpoint}): deleting pods for currently degraded/unhealthy apps"
+        echo "$${APPS_JSON}" | jq -r '.items[] | select((.status.health.status // "Unknown") != "Healthy") | .metadata.name' \
+          | while read -r app; do
+              [ -z "$${app}" ] && continue
+              NS=$(kubectl -n argocd get application "$${app}" -o jsonpath='{.spec.destination.namespace}' 2>/dev/null || true)
+              if [ -z "$${NS}" ]; then
+                echo "    (could not resolve destination namespace for $${app} — skipping)"
+                continue
+              fi
+              echo "    ↻ deleting all pods in namespace '$${NS}' (app: $${app})"
+              kubectl delete pods --all -n "$${NS}" --ignore-not-found >/dev/null 2>&1 || true
             done
       }
 
@@ -271,7 +278,11 @@ resource "null_resource" "verify_argocd_apps_healthy" {
           echo "$${NOT_READY}" | sed 's/^/    /'
         fi
         PREV_NOT_READY="$${NOT_READY}"
-        kick_stuck_image_pulls
+
+        if [ "$${i}" -eq 2 ] || [ "$${i}" -eq 20 ]; then
+          remediate_degraded_apps "$${i}"
+        fi
+
         sleep 15
       done
 
