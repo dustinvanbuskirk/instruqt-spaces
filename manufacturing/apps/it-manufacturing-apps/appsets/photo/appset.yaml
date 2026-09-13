@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: photo
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - git:
+        repoURL: http://gitea:3000/admin/manufacturing-configs.git
+        revision: HEAD
+        files:
+          - path: "*/*/*/photo/values.yaml"
+  template:
+    metadata:
+      name: 'photo-{{ index .path.segments 2 }}-{{ index .path.segments 1 }}'
+    spec:
+      project: default
+      source:
+        repoURL: http://gitea:3000/admin/manufacturing-configs.git
+        targetRevision: HEAD
+        path: '{{ index .path.segments 0 }}/{{ index .path.segments 1 }}/{{ index .path.segments 2 }}/photo'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: 'photo-{{ index .path.segments 2 }}-{{ index .path.segments 1 }}'
+      syncPolicy:
+        automated:
+          allowEmpty: true
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - Validate=false
+          - CreateNamespace=true

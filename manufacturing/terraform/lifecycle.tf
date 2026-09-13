@@ -15,18 +15,21 @@ resource "octopusdeploy_lifecycle" "manufacturing" {
     strategy         = "Count"
   }
 
+  # automatic_deployment_targets (not optional_deployment_targets): SQA and
+  # UAT deploy unattended the moment a release reaches this phase — only
+  # Lead Site Production and Production below stay manual gates.
   phase {
     name                                  = "SQA"
     is_optional_phase                     = false
     minimum_environments_before_promotion = 1
-    optional_deployment_targets           = [octopusdeploy_environment.sqa.id]
+    automatic_deployment_targets          = [octopusdeploy_environment.sqa.id]
   }
 
   phase {
     name                                  = "UAT"
     is_optional_phase                     = false
     minimum_environments_before_promotion = 1
-    optional_deployment_targets           = [octopusdeploy_environment.uat.id]
+    automatic_deployment_targets          = [octopusdeploy_environment.uat.id]
   }
 
   # Optional: only Fab 11 (the primary lead site) actually deploys here —

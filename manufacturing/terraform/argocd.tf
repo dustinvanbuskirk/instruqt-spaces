@@ -2,10 +2,15 @@
 #
 # Bootstraps Argo CD with the one thing it needs to pick up everything else:
 # the app-of-apps Application itself. Everything under it-manufacturing-apps/
-# in manufacturing-apps (per-facility/environment photo.yaml + probe.yaml)
-# cascades in automatically via Argo CD's own reconciliation — Terraform's
-# job here is just to bootstrap that one entry point, not to manage every
-# Application individually.
+# in manufacturing-apps cascades in automatically via Argo CD's own
+# reconciliation — Terraform's job here is just to bootstrap that one entry
+# point, not to manage every Application individually. As of this project's
+# move to generator-based Applications, that's 2 ApplicationSets
+# (it-manufacturing-apps/appsets/photo/appset.yaml and .../probe/appset.yaml,
+# each a git-files generator against manufacturing-configs) rather than a
+# static photo.yaml/probe.yaml per facility/environment — both still just
+# ordinary *.yaml manifests 3 levels deep, so the include glob below needs
+# no change.
 #
 # All Applications (app-of-apps and every child it creates) use Argo CD's
 # built-in "default" AppProject rather than a dedicated one — it already
