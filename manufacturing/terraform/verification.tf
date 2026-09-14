@@ -9,6 +9,13 @@
 # files) can only become genuinely Healthy once that exact image has been
 # built and pushed; checking health before the build finishes would just
 # catch pods stuck failing to pull an image that doesn't exist yet.
+#
+# One exception: probe-production-fab-16 is deliberately seeded broken
+# (a bad image.registry override, fixed by the learner in the
+# troubleshoot-probe-production track challenge) and is excluded from the
+# "must be Healthy" requirement below — with a positive check that it's
+# actually Degraded, not just skipped, so a track boot doesn't silently
+# pass with that seeded failure missing.
 
 resource "null_resource" "verify_service_builds" {
   depends_on = [null_resource.tag_and_build_services]
@@ -219,10 +226,21 @@ resource "null_resource" "verify_argocd_apps_healthy" {
       # rather than every poll — enough to give a genuinely stuck app a
       # real kick without repeatedly restarting pods that just need a
       # little more time to settle on their own.
+      # probe-production-fab-16 is deliberately, permanently broken (see
+      # instruqt-spaces' seeded image.registry override and the
+      # troubleshoot-probe-production track challenge that has the
+      # learner fix it) — it must never be treated as "not yet ready" by
+      # this resource, or this apply would wait the full 20 minutes and
+      # then fail every single time, and the remediation kick below would
+      # just repeatedly delete its pods for no benefit (they'd come right
+      # back with the same ImagePullBackOff).
+      EXPECTED_DEGRADED_APP="probe-production-fab-16"
+
       remediate_degraded_apps() {
         local checkpoint="$1"
         echo "  ⚠ checkpoint (attempt $${checkpoint}): deleting pods for currently degraded/unhealthy apps"
-        echo "$${APPS_JSON}" | jq -r '.items[] | select((.status.health.status // "Unknown") != "Healthy") | .metadata.name' \
+        echo "$${APPS_JSON}" | jq -r --arg skip "$${EXPECTED_DEGRADED_APP}" \
+            '.items[] | select(.metadata.name != $skip and (.status.health.status // "Unknown") != "Healthy") | .metadata.name' \
           | while read -r app; do
               [ -z "$${app}" ] && continue
               NS=$(kubectl -n argocd get application "$${app}" -o jsonpath='{.spec.destination.namespace}' 2>/dev/null || true)
@@ -256,14 +274,36 @@ resource "null_resource" "verify_argocd_apps_healthy" {
           continue
         fi
 
-        NOT_READY=$(echo "$${APPS_JSON}" | jq -r '
+        NOT_READY=$(echo "$${APPS_JSON}" | jq -r --arg skip "$${EXPECTED_DEGRADED_APP}" '
           .items[]
+          | select(.metadata.name != $skip)
           | select((.status.sync.status // "Unknown") != "Synced" or (.status.health.status // "Unknown") != "Healthy")
           | "\(.metadata.name): sync=\(.status.sync.status // "Unknown") health=\(.status.health.status // "Unknown")"
         ')
 
         if [ -z "$${NOT_READY}" ]; then
-          echo "✓ All $${TOTAL} Argo CD Application(s) are Synced and Healthy"
+          echo "✓ All $${TOTAL} Argo CD Application(s) are Synced and Healthy, except the deliberately-broken $${EXPECTED_DEGRADED_APP}"
+
+          # Positive confirmation, not just an exclusion: if this app has
+          # somehow become Healthy (the seeded values.yaml override got
+          # reverted, or never took effect), the troubleshoot-probe-production
+          # challenge would have nothing broken to find — fail loudly
+          # rather than silently pass a track that's no longer set up
+          # correctly for that challenge.
+          DEGRADED_APP_HEALTH=$(echo "$${APPS_JSON}" | jq -r --arg app "$${EXPECTED_DEGRADED_APP}" \
+            '.items[] | select(.metadata.name == $app) | .status.health.status // "Unknown"')
+
+          if [ -z "$${DEGRADED_APP_HEALTH}" ]; then
+            echo "✗ $${EXPECTED_DEGRADED_APP} not found among Argo CD Applications at all" >&2
+            exit 1
+          fi
+
+          if [ "$${DEGRADED_APP_HEALTH}" = "Healthy" ]; then
+            echo "✗ $${EXPECTED_DEGRADED_APP} is Healthy, but it's expected to be Degraded (its seeded broken image.registry override must be missing or reverted)" >&2
+            exit 1
+          fi
+
+          echo "✓ $${EXPECTED_DEGRADED_APP} is $${DEGRADED_APP_HEALTH}, as expected"
           exit 0
         fi
 
