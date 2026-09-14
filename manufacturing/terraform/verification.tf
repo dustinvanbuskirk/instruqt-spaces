@@ -236,6 +236,20 @@ resource "null_resource" "verify_argocd_apps_healthy" {
       # back with the same ImagePullBackOff).
       EXPECTED_DEGRADED_APP="probe-production-fab-16"
 
+      # Never touch the argocd namespace, unconditionally, regardless of
+      # which app or why — it's Argo CD's own control-plane namespace
+      # (server, repo-server, application-controller, etc.), never a
+      # destination any of this project's own seeded workloads deploy
+      # into. Confirmed directly: it-manufacturing-apps (the app-of-apps
+      # itself, whose own destination.namespace is "argocd") went
+      # Degraded once, and this remediation deleted every pod in
+      # "argocd" trying to "fix" it — taking down Argo CD's own
+      # server/controller pods. This guard makes that impossible
+      # regardless of which app triggers it or why.
+      is_argocd_namespace() {
+        [ "$1" = "argocd" ]
+      }
+
       remediate_degraded_apps() {
         local checkpoint="$1"
         echo "  ⚠ checkpoint (attempt $${checkpoint}): deleting pods for currently degraded/unhealthy apps"
@@ -246,6 +260,10 @@ resource "null_resource" "verify_argocd_apps_healthy" {
               NS=$(kubectl -n argocd get application "$${app}" -o jsonpath='{.spec.destination.namespace}' 2>/dev/null || true)
               if [ -z "$${NS}" ]; then
                 echo "    (could not resolve destination namespace for $${app} — skipping)"
+                continue
+              fi
+              if is_argocd_namespace "$${NS}"; then
+                echo "    (app '$${app}' destination namespace is 'argocd' — never deleting pods there, skipping)"
                 continue
               fi
               echo "    ↻ deleting all pods in namespace '$${NS}' (app: $${app})"
