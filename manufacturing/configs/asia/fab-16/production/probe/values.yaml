@@ -4,6 +4,7 @@ image:
   registry: docker.io/dustinvanbuskirk
   repository: probe
   pullPolicy: IfNotPresent
+  tag: "1.0.0"
 
 imagePullSecrets: []
 nameOverride: ""

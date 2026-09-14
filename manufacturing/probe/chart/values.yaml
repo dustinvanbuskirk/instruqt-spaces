@@ -1,14 +1,10 @@
-# Plain, untouched values -- the Update Argo CD Application Manifests step
-# never renders this file, only Chart.yaml (see that file's own comment).
-# image.tag is deliberately absent: templates/deployment.yaml falls back to
-# `.Chart.AppVersion` when it's unset, so the deployed image tag now comes
-# from Chart.yaml's templated appVersion instead of a hardcoded value here.
 replicaCount: 2
 
 image:
   registry: gitea:3000/admin
   repository: probe
   pullPolicy: IfNotPresent
+  tag: "#{Octopus.Release.Number}"
 
 imagePullSecrets: []
 nameOverride: ""

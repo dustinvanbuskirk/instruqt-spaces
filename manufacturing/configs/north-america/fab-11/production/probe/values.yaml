@@ -4,6 +4,7 @@ image:
   registry: gitea:3000/admin
   repository: probe
   pullPolicy: IfNotPresent
+  tag: "1.0.0"
 
 imagePullSecrets: []
 nameOverride: ""
