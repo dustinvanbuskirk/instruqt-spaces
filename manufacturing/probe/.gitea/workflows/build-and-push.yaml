@@ -149,6 +149,29 @@ jobs:
         with:
           version: latest
 
+      - name: Package and publish Helm chart to Octopus
+        # A separate package (distinct id from the "probe" Docker image
+        # package, same version) so the "Update Argo CD Application
+        # Manifests" step's package reference has something to bind to —
+        # this package's whole content is what that step copies into each
+        # tenant's Argo CD source path at deploy time (see chart/Chart.yaml's
+        # own comment: it's the only file in here Octopus actually renders).
+        env:
+          OCTOPUS_URL: ${{ secrets.OCTOPUS_SERVER_URL }}
+          OCTOPUS_API_KEY: ${{ secrets.OCTOPUS_API_KEY }}
+          OCTOPUS_SPACE: ${{ vars.OCTOPUS_SPACE }}
+        run: |
+          octopus package pack \
+            --id=probe-chart \
+            --version="${{ steps.meta.outputs.version }}" \
+            --format=zip \
+            --base-path=chart \
+            --out-folder=.
+          octopus package upload \
+            --package=probe-chart."${{ steps.meta.outputs.version }}".zip \
+            --overwrite-mode=OverwriteExisting \
+            --no-prompt
+
       - name: Push Build Information to Octopus Deploy
         env:
           OCTOPUS_URL: ${{ secrets.OCTOPUS_SERVER_URL }}

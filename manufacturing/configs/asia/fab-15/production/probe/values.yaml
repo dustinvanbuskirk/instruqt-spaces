@@ -1,75 +1,78 @@
-probe:
-  replicaCount: 2
+replicaCount: 2
 
-  image:
-    registry: gitea:3000/admin
-    repository: probe
-    pullPolicy: IfNotPresent
-    tag: "1.0.0"  # Overrides the image tag (default is chart appVersion)
+image:
+  registry: gitea:3000/admin
+  repository: probe
+  pullPolicy: IfNotPresent
 
-  imagePullSecrets: []
-  nameOverride: ""
-  fullnameOverride: ""
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
 
-  serviceAccount:
-    create: true
-    annotations: {}
-    name: ""
+imageCredentials:
+  create: true
+  registry: gitea:3000
+  username: admin
+  password: Admin123!
 
-  podAnnotations: {}
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
 
-  podSecurityContext:
-    runAsNonRoot: true
-    runAsUser: 1000
-    fsGroup: 1000
+podAnnotations: {}
 
-  securityContext:
-    allowPrivilegeEscalation: false
-    capabilities:
-      drop:
-      - ALL
-    readOnlyRootFilesystem: true
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
 
-  service:
-    type: ClusterIP
-    port: 80
-    targetPort: 8080
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
 
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
 
-  resources:
-    limits:
-      cpu: 200m
-      memory: 128Mi
-    requests:
-      cpu: 100m
-      memory: 64Mi
+resources:
+  limits:
+    cpu: 200m
+    memory: 128Mi
+  requests:
+    cpu: 100m
+    memory: 64Mi
 
-  livenessProbe:
-    httpGet:
-      path: /health
-      port: http
-    initialDelaySeconds: 10
-    periodSeconds: 10
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
 
-  readinessProbe:
-    httpGet:
-      path: /ready
-      port: http
-    initialDelaySeconds: 5
-    periodSeconds: 5
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 5
 
-  autoscaling:
-    enabled: false
-    minReplicas: 2
-    maxReplicas: 10
-    targetCPUUtilizationPercentage: 80
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
 
-  nodeSelector: {}
+nodeSelector: {}
 
-  tolerations: []
+tolerations: []
 
-  affinity: {}
+affinity: {}
 
-  env:
-    textColor: "#FFFFFF"
-    bgColor: "#2C3E50"
+env:
+  textColor: "#FFFFFF"
+  bgColor: "#2C3E50"
