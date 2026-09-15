@@ -50,7 +50,13 @@ resource "null_resource" "install_worker_tooling" {
         docker exec octopus-worker bash -c '
           set -e
           apt-get update -qq
-          apt-get install -y -qq wget curl apt-transport-https gnupg jq git unzip ca-certificates >/dev/null
+          # unzip deliberately excluded: nothing here or downstream needs
+          # it, and its exact cached package version 404ing from a
+          # Debian mirror once already took down this entire atomic
+          # install (including the actually-critical pwsh) since
+          # `apt-get install` fails the whole line together — confirmed
+          # directly, all 5 retries hit the identical 404.
+          apt-get install -y -qq wget curl apt-transport-https gnupg jq git ca-certificates >/dev/null
 
           wget -q https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb -O /tmp/packages-microsoft-prod.deb
           dpkg -i /tmp/packages-microsoft-prod.deb >/dev/null
