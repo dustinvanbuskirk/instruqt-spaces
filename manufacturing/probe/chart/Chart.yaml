@@ -1,14 +1,13 @@
 apiVersion: v2
 name: probe
 description: >-
-  This file is an Octostache template -- Octopus's "Update Argo CD Application
-  Manifests" step renders it (reading it directly from this repo, not a
-  package) and overwrites each tenant/environment's actual Chart.yaml,
-  substituting version and appVersion. values.yaml and templates/ in this
-  repo are plain, untouched files -- the image tag now comes from this
-  chart's own appVersion (see templates/deployment.yaml's
-  `.Values.image.tag | default .Chart.AppVersion`), not a hardcoded values.yaml
-  field.
+  This file and values.yaml alongside it are both Octostache templates --
+  Octopus's "Update Argo CD Application Manifests" step reads both directly
+  from this repo (not a package) and overwrites each tenant/environment's
+  actual Chart.yaml and values.yaml, substituting appVersion here and
+  image.tag in values.yaml. templates/ in this repo is a plain, untouched
+  reference copy -- it isn't itself deployed from here, only from each
+  tenant's own copy in manufacturing-configs.
 type: application
-version: "#{Octopus.Release.Number}"
+version: 0.1.0
 appVersion: "#{Octopus.Release.Number}"
