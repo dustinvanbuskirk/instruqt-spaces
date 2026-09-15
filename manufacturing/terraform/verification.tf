@@ -18,7 +18,12 @@
 # pass with that seeded failure missing.
 
 resource "null_resource" "verify_service_builds" {
-  depends_on = [null_resource.tag_and_build_services]
+  # install_worker_tooling has no dependency of its own and normally has
+  # no reason to run before or after this — added explicitly so a broken
+  # worker (pwsh install failing, confirmed to happen live) fails fast,
+  # before burning the 15-90 minutes this and verify_argocd_apps_healthy
+  # can take, rather than surfacing only at the very end of the apply.
+  depends_on = [null_resource.tag_and_build_services, null_resource.install_worker_tooling]
 
   triggers = {
     always_run = timestamp()
