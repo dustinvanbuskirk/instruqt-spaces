@@ -1,7 +1,7 @@
 replicaCount: 2
 
 image:
-  registry: docker.io/dustinvanbuskirk
+  registry: gitea:3000/admin
   repository: probe
   pullPolicy: IfNotPresent
   tag: "1.0.0"

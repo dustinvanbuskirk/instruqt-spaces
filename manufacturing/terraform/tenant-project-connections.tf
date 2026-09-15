@@ -14,11 +14,13 @@ resource "octopusdeploy_tenant_project" "photo_fab_11" {
   space_id   = var.octopus_space_id
   tenant_id  = octopusdeploy_tenant.fab_11.id
   project_id = octopusdeploy_project.photo.id
+  # No Production here — Fab 11 is the lead site, validated via Lead Site
+  # Production instead of also rolling out to plain Production (which has
+  # no manufacturing-configs content for Fab 11 either, on purpose).
   environment_ids = [
     octopusdeploy_environment.sqa.id,
     octopusdeploy_environment.uat.id,
-    octopusdeploy_environment.lead_site_production.id,
-    octopusdeploy_environment.production.id
+    octopusdeploy_environment.lead_site_production.id
   ]
 }
 
@@ -73,11 +75,11 @@ resource "octopusdeploy_tenant_project" "probe_fab_11" {
   space_id   = var.octopus_space_id
   tenant_id  = octopusdeploy_tenant.fab_11.id
   project_id = octopusdeploy_project.probe.id
+  # No Production here — see photo_fab_11's comment above.
   environment_ids = [
     octopusdeploy_environment.sqa.id,
     octopusdeploy_environment.uat.id,
-    octopusdeploy_environment.lead_site_production.id,
-    octopusdeploy_environment.production.id
+    octopusdeploy_environment.lead_site_production.id
   ]
 }
 

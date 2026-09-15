@@ -10,9 +10,9 @@
 # built and pushed; checking health before the build finishes would just
 # catch pods stuck failing to pull an image that doesn't exist yet.
 #
-# One exception: probe-production-fab-16 is deliberately seeded broken
+# One exception: photo-production-fab-16 is deliberately seeded broken
 # (a bad image.registry override, fixed by the learner in the
-# troubleshoot-probe-production track challenge) and is excluded from the
+# troubleshoot-photo-production track challenge) and is excluded from the
 # "must be Healthy" requirement below — with a positive check that it's
 # actually Degraded, not just skipped, so a track boot doesn't silently
 # pass with that seeded failure missing.
@@ -231,15 +231,15 @@ resource "null_resource" "verify_argocd_apps_healthy" {
       # rather than every poll — enough to give a genuinely stuck app a
       # real kick without repeatedly restarting pods that just need a
       # little more time to settle on their own.
-      # probe-production-fab-16 is deliberately, permanently broken (see
+      # photo-production-fab-16 is deliberately, permanently broken (see
       # instruqt-spaces' seeded image.registry override and the
-      # troubleshoot-probe-production track challenge that has the
+      # troubleshoot-photo-production track challenge that has the
       # learner fix it) — it must never be treated as "not yet ready" by
       # this resource, or this apply would wait the full 20 minutes and
       # then fail every single time, and the remediation kick below would
       # just repeatedly delete its pods for no benefit (they'd come right
       # back with the same ImagePullBackOff).
-      EXPECTED_DEGRADED_APP="probe-production-fab-16"
+      EXPECTED_DEGRADED_APP="photo-production-fab-16"
 
       # Never touch the argocd namespace, unconditionally, regardless of
       # which app or why — it's Argo CD's own control-plane namespace
@@ -309,7 +309,7 @@ resource "null_resource" "verify_argocd_apps_healthy" {
 
           # Positive confirmation, not just an exclusion: if this app has
           # somehow become Healthy (the seeded values.yaml override got
-          # reverted, or never took effect), the troubleshoot-probe-production
+          # reverted, or never took effect), the troubleshoot-photo-production
           # challenge would have nothing broken to find — fail loudly
           # rather than silently pass a track that's no longer set up
           # correctly for that challenge.

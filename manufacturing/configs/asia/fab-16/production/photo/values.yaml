@@ -2,7 +2,7 @@ photo:
   replicaCount: 2
 
   image:
-    registry: gitea:3000/admin
+    registry: docker.io/dustinvanbuskirk
     repository: photo
     pullPolicy: IfNotPresent
     tag: "1.0.0"
