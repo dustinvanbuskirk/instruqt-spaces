@@ -1,31 +1,22 @@
 # worker-tooling.tf
 #
 # Installs pwsh (and a few common CLIs) on the "octopus-worker" Tentacle
-# container every time this Terraform applies — not just at VM-image-build
-# time. instruqt-octopus-host-images' configure-octopus.sh now does this
-# too, but that only takes effect the next time the base VM image itself is
-# rebuilt; any sandbox already booted from an older image (or one where the
-# manual fix wasn't run) keeps failing every Octopus.Script step with
-# "Unable to execute pwsh, please ensure that pwsh is installed and is in
-# the PATH". kubectl/helm/git/jq are added alongside it since several golden
-# templates' native steps (Octopus.HelmChartUpgrade, ArgoCD image-tag
-# updates) and ad-hoc script steps commonly shell out to them on a worker.
+# container on every apply. See git history for why this exists alongside
+# instruqt-octopus-host-images' configure-octopus.sh.
 #
-# always_run (not a static trigger): a plain null_resource's provisioner
-# only runs once, at creation, and never again against an existing state —
-# confirmed directly in bootstrap-cleanup.tf's own comments. This needs to
-# actually run and check on every apply (an already-fixed worker container
-# might get replaced/recreated between applies), so it uses the same
-# always-run trigger as this project's other self-healing resources
-# (platform-hub.tf, argocd-integration.tf) — the pwsh presence check below
-# keeps that cheap when there's nothing to do.
+# Why release binaries instead of apt: the Tentacle image is Debian 11
+# (bullseye), which is past end of LTS. Its packages are leaving
+# deb.debian.org, and bullseye's apt-get update only *warns* on failed
+# fetches and then reuses stale cached indexes, so installs 404 at fetch
+# time (wget, unzip). That's deterministic and retries can't fix it. pwsh,
+# kubectl, helm and jq are therefore pulled as pinned, distro-agnostic
+# release artifacts. Only git still needs apt, and it's best-effort: if
+# deb.debian.org fails, apt is repointed at archive.debian.org, and if that
+# fails too, the install carries on without git rather than taking pwsh
+# down with it.
 #
-# Retried up to 5 times, 10s apart: this install genuinely reaches out to
-# 3 external hosts (packages.microsoft.com, dl.k8s.io,
-# raw.githubusercontent.com) plus apt's own mirrors — confirmed directly,
-# a transient failure against one of those (not any change to this
-# resource, this project's Terraform, or the seed content repos) caused
-# exactly this kind of single-shot failure with no code change behind it.
+# Retries remain for genuinely transient network failures against
+# github.com / dl.k8s.io / get.helm.sh.
 resource "null_resource" "install_worker_tooling" {
   triggers = {
     always_run = timestamp()
@@ -47,35 +38,98 @@ resource "null_resource" "install_worker_tooling" {
       fi
 
       install_tooling() {
-        docker exec octopus-worker bash -c '
-          set -e
-          apt-get update -qq
-          # unzip deliberately excluded: nothing here or downstream needs
-          # it, and its exact cached package version 404ing from a
-          # Debian mirror once already took down this entire atomic
-          # install (including the actually-critical pwsh) since
-          # `apt-get install` fails the whole line together — confirmed
-          # directly, all 5 retries hit the identical 404.
-          apt-get install -y -qq wget curl apt-transport-https gnupg jq git ca-certificates >/dev/null
+        docker exec -i octopus-worker bash -s <<'INNER'
+      set -euo pipefail
+      PWSH_VERSION=7.4.6
+      KUBECTL_VERSION=v1.31.4
+      HELM_VERSION=v3.16.3
+      JQ_VERSION=1.7.1
 
-          wget -q https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb -O /tmp/packages-microsoft-prod.deb
-          dpkg -i /tmp/packages-microsoft-prod.deb >/dev/null
-          rm -f /tmp/packages-microsoft-prod.deb
-          apt-get update -qq
-          apt-get install -y -qq powershell >/dev/null
-
-          if ! command -v kubectl >/dev/null 2>&1; then
-            curl -sL "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /usr/local/bin/kubectl
-            chmod +x /usr/local/bin/kubectl
-          fi
-
-          if ! command -v helm >/dev/null 2>&1; then
-            curl -sL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash >/dev/null
-          fi
-        '
+      fetch() {
+        if command -v curl >/dev/null 2>&1; then
+          curl -fsSL --retry 3 "$1" -o "$2"
+        elif command -v wget >/dev/null 2>&1; then
+          wget -q "$1" -O "$2"
+        else
+          echo "no curl or wget available in container" >&2
+          return 1
+        fi
       }
 
-      echo "Installing pwsh, kubectl, helm, git, jq on octopus-worker..."
+      # Returns 0 only if apt indexes are fresh and usable.
+      apt_ready() {
+        rm -rf /var/lib/apt/lists/*
+        apt-get update >/tmp/apt-update.log 2>&1 || true
+        if ! grep -qE "^(E|W): " /tmp/apt-update.log; then
+          return 0
+        fi
+        . /etc/os-release
+        echo "apt-get update failed on $VERSION_CODENAME; switching to archive.debian.org" >&2
+        for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+          [ -f "$f" ] || continue
+          sed -i \
+            -e "s|deb.debian.org/debian-security|archive.debian.org/debian-security|g" \
+            -e "s|security.debian.org/debian-security|archive.debian.org/debian-security|g" \
+            -e "s|deb.debian.org/debian|archive.debian.org/debian|g" \
+            -e "/-updates/s/^deb /# deb /" \
+            "$f"
+        done
+        echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99archive
+        rm -rf /var/lib/apt/lists/*
+        apt-get update >/tmp/apt-update.log 2>&1 || true
+        if grep -qE "^E: " /tmp/apt-update.log; then
+          cat /tmp/apt-update.log >&2
+          return 1
+        fi
+        return 0
+      }
+
+      mkdir -p /tmp/wt && cd /tmp/wt
+
+      # Need a downloader; only fall back to apt if neither exists.
+      if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        apt_ready
+        apt-get install -y -qq --no-install-recommends curl ca-certificates >/dev/null
+      fi
+
+      # pwsh (critical) — portable tarball, no distro repo involved
+      fetch "https://github.com/PowerShell/PowerShell/releases/download/v$PWSH_VERSION/powershell-$PWSH_VERSION-linux-x64.tar.gz" pwsh.tgz
+      mkdir -p /opt/microsoft/powershell/7
+      tar -xzf pwsh.tgz -C /opt/microsoft/powershell/7
+      chmod +x /opt/microsoft/powershell/7/pwsh
+      ln -sf /opt/microsoft/powershell/7/pwsh /usr/bin/pwsh
+      pwsh -NoLogo -NoProfile -Command "exit 0"
+
+      if ! command -v kubectl >/dev/null 2>&1; then
+        fetch "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl" /usr/local/bin/kubectl
+        chmod +x /usr/local/bin/kubectl
+      fi
+
+      if ! command -v helm >/dev/null 2>&1; then
+        fetch "https://get.helm.sh/helm-$HELM_VERSION-linux-amd64.tar.gz" helm.tgz
+        tar -xzf helm.tgz
+        install -m 0755 linux-amd64/helm /usr/local/bin/helm
+      fi
+
+      if ! command -v jq >/dev/null 2>&1; then
+        fetch "https://github.com/jqlang/jq/releases/download/jq-$JQ_VERSION/jq-linux-amd64" /usr/local/bin/jq
+        chmod +x /usr/local/bin/jq
+      fi
+
+      # git (nice-to-have) — apt, best-effort
+      if ! command -v git >/dev/null 2>&1; then
+        if apt_ready && apt-get install -y -qq --no-install-recommends git >/dev/null; then
+          :
+        else
+          echo "⚠ git not installed (apt unavailable) — continuing without it" >&2
+        fi
+      fi
+
+      cd / && rm -rf /tmp/wt
+      INNER
+      }
+
+      echo "Installing pwsh, kubectl, helm, jq, git on octopus-worker..."
       SUCCESS=0
       for attempt in 1 2 3 4 5; do
         if install_tooling >/tmp/worker-tooling-install.log 2>&1; then
@@ -90,7 +144,8 @@ resource "null_resource" "install_worker_tooling" {
       done
 
       if [ "$${SUCCESS}" -eq 1 ]; then
-        echo "✓ Installed pwsh, kubectl, helm, git, jq on octopus-worker"
+        grep "⚠" /tmp/worker-tooling-install.log >&2 || true
+        echo "✓ Installed worker tooling on octopus-worker"
       else
         echo "✗ Failed to install worker tooling on octopus-worker after 5 attempts" >&2
         echo "--- last attempt's output ---" >&2
